@@ -173,6 +173,10 @@ func (h *Web3Handler) HandleVerify(w http.ResponseWriter, r *http.Request) {
 	h.sendJSON(w, http.StatusOK, response)
 }
 
+func (h *Web3Handler) HandleRefresh(w http.ResponseWriter, r *http.Request) {
+	// TODO:
+}
+
 // getPermissionStrings 获取权限字符串列表
 func (h *Web3Handler) getPermissionStrings(perms *user.Permissions) []string {
 	var permissions []string

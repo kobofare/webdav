@@ -36,7 +36,7 @@ build/webdav -c config.yaml
 ## 健康检查
 
 ```shell
-curl http://127.0.0.1:6065/health
+curl http://127.0.0.1:6065/api/v1/public/common/health/heartbeat
 ```
 
 # 常用命令行操作
@@ -67,7 +67,7 @@ curl -X MKCOL -u alice:password123 http://127.0.0.1:6065/new
 curl -u alice:wrongpassword http://127.0.0.1:6065/
 
 # 8. 查询quota使用情况
-curl -u alice:password123 -s http://localhost:6065/api/quota | jq .
+curl -u alice:password123 -s http://localhost:6065/api/v1/public/webdav/quota | jq .
 ```
 
 # 常用的客户端操作

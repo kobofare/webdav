@@ -48,14 +48,15 @@ func (r *Router) Setup() http.Handler {
 	mux := http.NewServeMux()
 
 	// 健康检查路由（无需认证）
-	mux.HandleFunc("/health", r.healthHandler.Handle)
+	mux.HandleFunc("/api/v1/public/common/health/heartbeat", r.healthHandler.Handle)
 
 	// Web3 认证路由（无需认证）
-	mux.HandleFunc("/api/auth/challenge", r.web3Handler.HandleChallenge)
-	mux.HandleFunc("/api/auth/verify", r.web3Handler.HandleVerify)
+	mux.HandleFunc("/api/v1/public/common/auth/challenge", r.web3Handler.HandleChallenge)
+	mux.HandleFunc("/api/v1/public/common/auth/verify", r.web3Handler.HandleVerify)
+	mux.HandleFunc("/api/v1/public/common/auth/refreshToken", r.web3Handler.HandleRefresh)
 
 	// API 路由（需要认证）
-	mux.Handle("/api/quota", r.createAuthenticatedHandler(http.HandlerFunc(r.quotaHandler.GetUserQuota)))
+	mux.Handle("/api/v1/public/webdav/quota", r.createAuthenticatedHandler(http.HandlerFunc(r.quotaHandler.GetUserQuota)))
 
 	// WebDAV 路由（需要认证）
 	webdavPrefix := r.normalizePrefix(r.config.WebDAV.Prefix)
