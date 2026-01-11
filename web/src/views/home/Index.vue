@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { ref, onMounted, nextTick } from 'vue'
+import { Download, Delete } from '@element-plus/icons-vue'
 import { quotaApi } from '@/api'
 import { isLoggedIn, hasWallet, loginWithWallet } from '@/plugins/auth'
+import { parsePropfindResponse } from '@/utils/webdav'
 
 interface FileItem {
   name: string
@@ -42,76 +44,16 @@ async function fetchFiles(path: string = '/') {
 
     const text = await response.text()
     console.log('PROPFIND response text length:', text.length)
-    console.log('PROPFIND response text:', text)
 
-    fileList.value = parsePropfindResponse(text)
-    console.log('parsed items:', fileList.value)
+    // 先更新 currentPath，再解析
     currentPath.value = path
+    fileList.value = parsePropfindResponse(text, currentPath.value)
+    console.log('parsed items:', fileList.value)
   } catch (error) {
     console.error('获取文件列表失败:', error)
   } finally {
     loading.value = false
   }
-}
-
-// 解析 WebDAV PROPFIND 响应
-function parsePropfindResponse(xml: string): FileItem[] {
-  const items: FileItem[] = []
-
-  // 提取所有 href - 匹配 <d:href> 或 <D:href>
-  const hrefRegex = /<[Dd]:href>([^<]+)<\/[Dd]:href>/gi
-  const hrefs = [...xml.matchAll(hrefRegex)]
-
-  // 提取所有 displayname - 匹配 <d:displayname> 或 <D:displayname>
-  const nameRegex = /<[Dd]:displayname>([^<]*)<\/[Dd]:displayname>/gi
-  const names = [...xml.matchAll(nameRegex)]
-
-  // 提取所有文件大小
-  const sizeRegex = /<[Dd]:getcontentlength>([^<]*)<\/[Dd]:getcontentlength>/gi
-  const sizes = [...xml.matchAll(sizeRegex)]
-
-  // 提取所有修改时间
-  const lastModRegex = /<[Dd]:getlastmodified>([^<]+)<\/[Dd]:getlastmodified>/gi
-  const lastMods = [...xml.matchAll(lastModRegex)]
-
-  console.log('PROPFIND debug: hrefs:', hrefs.length, 'names:', names.length, 'sizes:', sizes.length)
-
-  // 从 hrefs 中提取路径，排除根目录
-  // hrefs[0] 是当前目录自身，从 i=1 开始是子项
-  for (let i = 1; i < hrefs.length; i++) {
-    const href = decodeURIComponent(hrefs[i][1])
-    const displayName = names[i]?.[1] || ''
-
-    // 从 href 路径提取名称，如 /test/file.png → file.png
-    let name = href.split('/').filter(Boolean).pop() || ''
-
-    // 只有当 displayname 非空且不是目录时，才使用 displayname
-    // 目录的 displayname 可能跟目录名相同，文件的 displayname 通常为空
-    if (displayName && displayName.trim() !== '') {
-      // 检查是否是文件（没有尾斜杠）
-      if (!href.endsWith('/')) {
-        name = displayName
-      }
-    }
-
-    console.log(`PROPFIND item[${i}]: name=${name}, href=${href}, displayname=${displayName}`)
-
-    // 排除自身（空名称）
-    if (name === '') continue
-
-    const size = parseInt(sizes[i]?.[1] || '0')
-    const lastMod = lastMods[i]?.[1] || ''
-
-    items.push({
-      name,
-      path: href,
-      isDir: href.endsWith('/'),
-      size,
-      modified: lastMod
-    })
-  }
-
-  return items
 }
 
 // 获取配额
@@ -287,6 +229,23 @@ function formatSize(bytes: number): string {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + units[i]
 }
 
+// 格式化时间
+function formatTime(timeStr: string): string {
+  if (!timeStr) return '-'
+  try {
+    const date = new Date(timeStr)
+    return date.toLocaleString('zh-CN', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit'
+    })
+  } catch {
+    return timeStr
+  }
+}
+
 // 连接钱包
 async function handleConnect() {
   try {
@@ -362,7 +321,7 @@ onMounted(() => {
         style="width: 100%"
         @row-click="enterDirectory"
       >
-        <el-table-column label="名称" min-width="300">
+        <el-table-column label="名称" min-width="280">
           <template #default="{ row }">
             <div class="file-name">
               <span class="iconfont" :class="row.isDir ? 'icon-wenjianjia' : 'icon-wenjian1'"></span>
@@ -370,25 +329,25 @@ onMounted(() => {
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="大小" width="120">
+        <el-table-column label="大小" width="100">
           <template #default="{ row }">
             {{ row.isDir ? '-' : formatSize(row.size) }}
           </template>
         </el-table-column>
-        <el-table-column label="修改时间" width="180">
+        <el-table-column label="修改时间" width="160">
           <template #default="{ row }">
-            {{ row.modified }}
+            {{ formatTime(row.modified) }}
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="150" fixed="right">
+        <el-table-column label="操作" width="100" fixed="right">
           <template #default="{ row }">
             <div class="actions" @click.stop>
-              <el-button v-if="!row.isDir" type="primary" link @click="downloadFile(row)">
-                下载
-              </el-button>
-              <el-button type="danger" link @click="deleteFile(row)">
-                删除
-              </el-button>
+              <el-tooltip v-if="!row.isDir" content="下载" placement="top">
+                <el-button type="primary" link :icon="Download" @click="downloadFile(row)" />
+              </el-tooltip>
+              <el-tooltip content="删除" placement="top">
+                <el-button type="danger" link :icon="Delete" @click="deleteFile(row)" />
+              </el-tooltip>
             </div>
           </template>
         </el-table-column>
