@@ -50,7 +50,7 @@ func (m *AuthMiddleware) Handle(next http.Handler) http.Handler {
 		if credentials == nil {
 			if m.required {
 				m.logger.Debug("no credentials provided")
-				m.sendUnauthorized(w, "Authentication required")
+				m.sendUnauthorized(w, r, "Authentication required")
 				return
 			}
 			// 不需要认证，继续
@@ -62,7 +62,7 @@ func (m *AuthMiddleware) Handle(next http.Handler) http.Handler {
 		u, err := m.authenticate(ctx, credentials)
 		if err != nil {
 			m.logger.Warn("authentication failed", zap.Error(err))
-			m.sendUnauthorized(w, "Authentication failed")
+			m.sendUnauthorized(w, r, "Authentication failed")
 			return
 		}
 
@@ -97,7 +97,7 @@ func (m *AuthMiddleware) authenticate(ctx context.Context, credentials interface
 			return nil, err
 		}
 
-		m.logger.Info("authentication successful",
+		m.logger.Debug("authentication successful",
 			zap.String("authenticator", authenticator.Name()),
 			zap.String("username", u.Username))
 
@@ -134,10 +134,31 @@ func (m *AuthMiddleware) extractCredentials(r *http.Request) interface{} {
 }
 
 // sendUnauthorized 发送未授权响应
-func (m *AuthMiddleware) sendUnauthorized(w http.ResponseWriter, message string) {
-	// 不设置 WWW-Authenticate，避免浏览器弹出 Basic Auth 对话框
-	// 前端会通过 Bearer Token 或其他方式处理认证
+func (m *AuthMiddleware) sendUnauthorized(w http.ResponseWriter, r *http.Request, message string) {
+	if isWebDAVRequest(r) {
+		w.Header().Set("WWW-Authenticate", `Basic realm="WebDAV"`)
+	}
+	// 默认不设置 WWW-Authenticate，避免浏览器弹出 Basic Auth 对话框
 	http.Error(w, message, http.StatusUnauthorized)
+}
+
+func isWebDAVRequest(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	method := strings.ToUpper(r.Method)
+	switch method {
+	case "PROPFIND", "PROPPATCH", "MKCOL", "COPY", "MOVE", "LOCK", "UNLOCK", "REPORT", "SEARCH":
+		return true
+	}
+	ua := strings.ToLower(r.UserAgent())
+	if strings.Contains(ua, "webdav") || strings.Contains(ua, "davfs") {
+		return true
+	}
+	if r.Header.Get("Depth") != "" || r.Header.Get("Destination") != "" || r.Header.Get("Lock-Token") != "" {
+		return true
+	}
+	return false
 }
 
 // GetUserFromContext 从上下文获取用户

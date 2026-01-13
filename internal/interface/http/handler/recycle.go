@@ -146,3 +146,35 @@ func (h *RecycleHandler) HandleRemove(w http.ResponseWriter, r *http.Request) {
 		h.logger.Error("failed to write response", zap.Error(err))
 	}
 }
+
+// HandleClear 处理清空回收站
+func (h *RecycleHandler) HandleClear(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	u, ok := middleware.GetUserFromContext(r.Context())
+	if !ok {
+		h.logger.Error("user not found in context")
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	deleted, err := h.recycleService.Clear(r.Context(), u)
+	if err != nil {
+		h.logger.Error("failed to clear recycle items",
+			zap.String("username", u.Username),
+			zap.Error(err))
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(map[string]any{
+		"deleted": deleted,
+	}); err != nil {
+		h.logger.Error("failed to encode response", zap.Error(err))
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+	}
+}

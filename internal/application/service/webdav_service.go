@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -79,9 +80,22 @@ func (s *WebDAVService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if isIgnoredWebDAVPath(r.URL.Path) {
+		if r.Body != nil {
+			_, _ = io.Copy(io.Discard, r.Body)
+		}
+		switch r.Method {
+		case http.MethodGet, http.MethodHead, "PROPFIND":
+			http.Error(w, "Not Found", http.StatusNotFound)
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
+		return
+	}
+
 	// 获取用户目录
 	userDir := s.getUserDirectory(u)
-	s.logger.Info("user directory", zap.String("username", u.Username), zap.String("directory", userDir))
+	s.logger.Debug("user directory", zap.String("username", u.Username), zap.String("directory", userDir))
 
 	// 确保目录存在
 	if err := s.ensureDirectory(userDir); err != nil {
@@ -170,6 +184,15 @@ func (s *WebDAVService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func isIgnoredWebDAVPath(rawPath string) bool {
+	if rawPath == "" || rawPath == "/" {
+		return false
+	}
+	cleaned := strings.TrimSuffix(rawPath, "/")
+	base := path.Base(cleaned)
+	return webdavfs.IsIgnoredName(base)
+}
+
 // handleDeleteWithRecycle 处理删除请求（带回收站功能）
 func (s *WebDAVService) handleDeleteWithRecycle(w http.ResponseWriter, r *http.Request, u *user.User, userDir string, handler *webdav.Handler, rec *statusRecorder) {
 	// 获取文件相对路径
@@ -178,9 +201,8 @@ func (s *WebDAVService) handleDeleteWithRecycle(w http.ResponseWriter, r *http.R
 	// 获取文件的完整路径
 	fullPath := filepath.Join(userDir, filePath)
 
-	// 检查是否为目录
-	info, err := os.Stat(fullPath)
-	if err != nil {
+	// 检查是否存在
+	if _, err := os.Stat(fullPath); err != nil {
 		if os.IsNotExist(err) {
 			http.Error(w, "Not Found", http.StatusNotFound)
 			return
@@ -190,13 +212,7 @@ func (s *WebDAVService) handleDeleteWithRecycle(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	// 目录不进入回收站，直接删除
-	if info.IsDir() {
-		handler.ServeHTTP(rec, r)
-		return
-	}
-
-	// 文件移动到回收站目录
+	// 文件/目录移动到回收站目录
 	if err := s.moveToRecycle(r.Context(), u, filePath, fullPath); err != nil {
 		s.logger.Error("failed to move file to recycle", zap.Error(err))
 		// 如果移动失败，直接删除
@@ -228,6 +244,9 @@ func (s *WebDAVService) moveToRecycle(ctx context.Context, u *user.User, relativ
 		return fmt.Errorf("failed to stat file: %w", err)
 	}
 	fileSize := info.Size()
+	if info.IsDir() {
+		fileSize = 0
+	}
 
 	// 确保回收站目录存在
 	if err := os.MkdirAll(s.recycleDir, 0755); err != nil {
@@ -235,8 +254,13 @@ func (s *WebDAVService) moveToRecycle(ctx context.Context, u *user.User, relativ
 	}
 
 	// 获取文件名和目录
-	fileName := filepath.Base(relativePath)
-	dirName := filepath.Dir(relativePath)
+	cleanRelative := strings.TrimSuffix(relativePath, "/")
+	cleanRelative = filepath.Clean(filepath.FromSlash(cleanRelative))
+	if cleanRelative == "." {
+		cleanRelative = ""
+	}
+	fileName := filepath.Base(cleanRelative)
+	dirName := filepath.Dir(cleanRelative)
 	if dirName == "." {
 		dirName = u.Directory
 		if dirName == "" {
@@ -245,7 +269,7 @@ func (s *WebDAVService) moveToRecycle(ctx context.Context, u *user.User, relativ
 	}
 
 	// 创建回收站记录（先生成 hash，便于文件命名）
-	item := recycle.NewRecycleItem(u.ID, u.Username, dirName, fileName, relativePath, fileSize)
+	item := recycle.NewRecycleItem(u.ID, u.Username, dirName, fileName, cleanRelative, fileSize)
 
 	// 生成唯一的回收站文件名：{hash}_{原文件名}
 	recycleFileName := fmt.Sprintf("%s_%s", item.Hash, fileName)
@@ -400,6 +424,12 @@ func (s *WebDAVService) createLogger(username string) func(*http.Request, error)
 		}
 
 		// 判断错误类型
+		if isNoSuchLockError(err) {
+			// Finder/客户端常见的无锁解锁请求，降级为 DEBUG
+			s.logger.Debug("webdav lock not found",
+				append(fields, zap.String("error", err.Error()))...)
+			return
+		}
 		if isNotFoundError(err) {
 			// 文件不存在 - WARN 级别，不打印堆栈
 			s.logger.Warn("resource not found",
@@ -439,6 +469,14 @@ func isNotFoundError(err error) bool {
 	return contains(errMsg, "no such file") ||
 		contains(errMsg, "not found") ||
 		contains(errMsg, "does not exist")
+}
+
+// isNoSuchLockError 判断是否为不存在的锁错误
+func isNoSuchLockError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return contains(err.Error(), "no such lock")
 }
 
 // isPermissionError 判断是否为权限错误

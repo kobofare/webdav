@@ -45,7 +45,7 @@ function handleLogout() {
           @click="handleConnect"
         >
           <el-icon><Wallet /></el-icon>
-          连接 {{ walletInfo.name }}
+          连接钱包
         </el-button>
         <span v-else class="no-wallet">未检测到钱包</span>
       </template>

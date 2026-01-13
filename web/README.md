@@ -1,4 +1,4 @@
-# yeying-assets
+# webdav
 Browser asset repository
 
 ## Node version

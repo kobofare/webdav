@@ -108,9 +108,48 @@ func (p *PostgresDB) Migrate(ctx context.Context) error {
 			created_at TIMESTAMP NOT NULL DEFAULT NOW()
 		)`,
 
+		// 创建定向分享表（分享给指定用户）
+		`CREATE TABLE IF NOT EXISTS share_user_items (
+			id VARCHAR(50) PRIMARY KEY,
+			owner_user_id VARCHAR(50) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			owner_username VARCHAR(255) NOT NULL,
+			target_user_id VARCHAR(50) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			target_wallet_address VARCHAR(255) NOT NULL,
+			name TEXT NOT NULL,
+			path TEXT NOT NULL,
+			is_dir BOOLEAN NOT NULL DEFAULT FALSE,
+			permissions VARCHAR(10) NOT NULL,
+			expires_at TIMESTAMP NULL,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW()
+		)`,
+
+		// 好友地址分组
+		`CREATE TABLE IF NOT EXISTS address_groups (
+			id VARCHAR(50) PRIMARY KEY,
+			user_id VARCHAR(50) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			name VARCHAR(255) NOT NULL,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW()
+		)`,
+
+		// 好友地址
+		`CREATE TABLE IF NOT EXISTS address_contacts (
+			id VARCHAR(50) PRIMARY KEY,
+			user_id VARCHAR(50) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			group_id VARCHAR(50) NULL REFERENCES address_groups(id) ON DELETE SET NULL,
+			name VARCHAR(255) NOT NULL,
+			wallet_address VARCHAR(255) NOT NULL,
+			tags TEXT[] NOT NULL DEFAULT '{}',
+			created_at TIMESTAMP NOT NULL DEFAULT NOW()
+		)`,
+
 		// 补充分享表字段（兼容已存在表）
 		`ALTER TABLE share_items ADD COLUMN IF NOT EXISTS view_count BIGINT NOT NULL DEFAULT 0`,
 		`ALTER TABLE share_items ADD COLUMN IF NOT EXISTS download_count BIGINT NOT NULL DEFAULT 0`,
+
+		// 补充定向分享表字段（兼容已存在表）
+		`ALTER TABLE share_user_items ADD COLUMN IF NOT EXISTS is_dir BOOLEAN NOT NULL DEFAULT FALSE`,
+		`ALTER TABLE share_user_items ADD COLUMN IF NOT EXISTS permissions VARCHAR(10) NOT NULL DEFAULT 'R'`,
+		`ALTER TABLE share_user_items ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP NULL`,
 
 		// 创建回收站的哈希索引
 		`CREATE INDEX IF NOT EXISTS idx_recycle_items_hash ON recycle_items(hash)`,
@@ -123,6 +162,23 @@ func (p *PostgresDB) Migrate(ctx context.Context) error {
 
 		// 创建分享的用户ID索引
 		`CREATE INDEX IF NOT EXISTS idx_share_items_user_id ON share_items(user_id)`,
+
+		// 创建定向分享的用户索引
+		`CREATE INDEX IF NOT EXISTS idx_share_user_items_owner_id ON share_user_items(owner_user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_share_user_items_target_id ON share_user_items(target_user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_share_user_items_target_wallet ON share_user_items(target_wallet_address)`,
+
+		// 好友地址分组索引
+		`CREATE INDEX IF NOT EXISTS idx_address_groups_user_id ON address_groups(user_id)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_address_groups_user_name ON address_groups(user_id, name)`,
+
+		// 好友地址索引
+		`CREATE INDEX IF NOT EXISTS idx_address_contacts_user_id ON address_contacts(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_address_contacts_group_id ON address_contacts(group_id)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_address_contacts_user_wallet ON address_contacts(user_id, wallet_address)`,
+
+		// 兼容已有地址簿表
+		`ALTER TABLE address_contacts ADD COLUMN IF NOT EXISTS tags TEXT[] NOT NULL DEFAULT '{}'`,
 
 		// 创建钱包地址索引
 		`CREATE INDEX IF NOT EXISTS idx_users_wallet_address ON users(wallet_address) WHERE wallet_address IS NOT NULL`,

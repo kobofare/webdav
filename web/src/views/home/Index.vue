@@ -1,18 +1,22 @@
 <script setup lang="ts">
-import { ref, onMounted, nextTick, computed } from 'vue'
-import { Download, Delete, Refresh, FolderOpened, DocumentCopy, Edit, Share, User } from '@element-plus/icons-vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { quotaApi, userApi, recycleApi, shareApi, type RecycleItem, type ShareItem } from '@/api'
-import { isLoggedIn, hasWallet, loginWithWallet, getUsername, getWalletName, getCurrentAccount, getUserPermissions, getUserCreatedAt } from '@/plugins/auth'
+import { ref, onMounted, nextTick, computed, watch } from 'vue'
+import { storeToRefs } from 'pinia'
+import { ArrowLeft, ArrowUp, Delete, FolderAdd, FolderOpened, Refresh, Upload, DocumentCopy, Share, User, UserFilled, Search } from '@element-plus/icons-vue'
+import { ElMessageBox } from 'element-plus'
+import { quotaApi, userApi, recycleApi, shareApi, directShareApi, type RecycleItem, type ShareItem, type DirectShareItem } from '@/api'
+import { isLoggedIn, hasWallet, getUsername, getWalletName, getCurrentAccount, getUserPermissions, getUserCreatedAt } from '@/plugins/auth'
 import { parsePropfindResponse } from '@/utils/webdav'
-
-interface FileItem {
-  name: string
-  path: string
-  isDir: boolean
-  size: number
-  modified: string
-}
+import { copyText } from '@/utils/clipboard'
+import { shortenAddress } from '@/utils/address'
+import { showInfo, showSuccess } from '@/utils/toast'
+import { useAddressBookStore } from '@/stores/addressBookStore'
+import AddressBookView from './components/AddressBookView.vue'
+import HomeOverlays from './components/HomeOverlays.vue'
+import FileTableView from './components/FileTableView.vue'
+import ShareTableView from './components/ShareTableView.vue'
+import SharedWithMeTableView from './components/SharedWithMeTableView.vue'
+import RecycleTableView from './components/RecycleTableView.vue'
+import type { DropEntry, FileItem, UploadItem } from './types'
 
 // 状态
 const loading = ref(false)
@@ -25,6 +29,7 @@ const userInfo = ref<{
   permissions: string[]
   created_at?: string
   updated_at?: string
+  has_password?: boolean
 } | null>(null)
 const uploadProgress = ref<string | null>(null)
 
@@ -35,22 +40,152 @@ const recycleLoading = ref(false)
 const showShare = ref(false)
 const shareList = ref<ShareItem[]>([])
 const shareLoading = ref(false)
+const shareTab = ref<'link' | 'direct'>('link')
+const directShareList = ref<DirectShareItem[]>([])
+const directShareLoading = ref(false)
+const showSharedWithMe = ref(false)
+const sharedWithMeList = ref<DirectShareItem[]>([])
+const sharedWithMeLoading = ref(false)
+const sharedActive = ref<DirectShareItem | null>(null)
+const sharedPath = ref('/')
+const sharedEntries = ref<FileItem[]>([])
+const sharedEntriesLoading = ref(false)
 const showQuotaManage = ref(false)
 const quotaManageLoading = ref(false)
+const showAddressBook = ref(false)
+const detailDrawerVisible = ref(false)
+const detailMode = ref<'file' | 'recycle' | 'share' | 'directShare' | 'receivedShare' | 'sharedEntry' | null>(null)
+const detailItem = ref<FileItem | RecycleItem | ShareItem | DirectShareItem | null>(null)
+const dragActive = ref(false)
+const dragCounter = ref(0)
+const shareUserDialogVisible = ref(false)
+const shareUserSubmitting = ref(false)
+const shareUserTarget = ref<FileItem | null>(null)
+const shareUserForm = ref({
+  targetMode: 'single' as 'single' | 'group',
+  targetAddress: '',
+  groupId: '',
+  permissions: ['read'] as string[],
+  expiresIn: '0'
+})
+const addressBookStore = useAddressBookStore()
+const { addressBookLoading, addressGroups, addressContacts } = storeToRefs(addressBookStore)
+const editingUsername = ref(false)
+const usernameDraft = ref('')
+const usernameSaving = ref(false)
+const passwordDialogVisible = ref(false)
+const passwordSubmitting = ref(false)
+const passwordForm = ref({
+  oldPassword: '',
+  newPassword: '',
+  confirmPassword: ''
+})
+const createFolderDialogVisible = ref(false)
+const createFolderSubmitting = ref(false)
+const createFolderMode = ref<'file' | 'shared' | null>(null)
+const createFolderForm = ref({
+  name: ''
+})
+const fileSearch = ref('')
+const recycleSearch = ref('')
+const shareLinkSearch = ref('')
+const shareDirectSearch = ref('')
+const sharedSearch = ref('')
+const renameDialogVisible = ref(false)
+const renameSubmitting = ref(false)
+const renameTarget = ref<FileItem | null>(null)
+const renameMode = ref<'file' | 'shared' | null>(null)
+const renameForm = ref({
+  name: ''
+})
+const VIEW_STORAGE_KEY = 'webdav:lastView'
+const FILE_PATH_STORAGE_KEY = 'webdav:lastFilePath'
+const SHARED_ACTIVE_STORAGE_KEY = 'webdav:sharedActiveId'
+const SHARED_PATH_STORAGE_KEY = 'webdav:sharedPath'
+type ViewKey = 'files' | 'recycle' | 'shareLink' | 'shareDirect' | 'sharedWithMe' | 'quotaManage' | 'addressBook'
 
 // 是否显示回收站列表
-const displayList = computed(() => {
-  if (showRecycle.value) return recycleList.value
-  if (showShare.value) return shareList.value
-  return fileList.value
+const canUpload = computed(() => {
+  if (showRecycle.value || showShare.value || showQuotaManage.value || showAddressBook.value) return false
+  if (showSharedWithMe.value) return isSharedBrowse.value && sharedCanCreate.value
+  return true
 })
+const isSharedBrowse = computed(() => showSharedWithMe.value && !!sharedActive.value)
+const sharedPermissions = computed(() => sharedActive.value?.permissions || [])
+const sharedCanRead = computed(() => sharedPermissions.value.includes('read'))
+const sharedCanCreate = computed(() => sharedPermissions.value.includes('create'))
+const sharedCanUpdate = computed(() => sharedPermissions.value.includes('update'))
+const sharedCanDelete = computed(() => sharedPermissions.value.includes('delete'))
 const userProfile = computed(() => {
   const username = userInfo.value?.username || getUsername() || '当前用户'
   const walletAddress = userInfo.value?.wallet_address || localStorage.getItem('walletAddress') || getCurrentAccount() || '-'
   const walletName = getWalletName()
   const permissions = userInfo.value?.permissions?.length ? userInfo.value.permissions : getUserPermissions()
   const createdAt = userInfo.value?.created_at || getUserCreatedAt()
-  return { username, walletAddress, walletName, permissions, createdAt }
+  const hasPassword = Boolean(userInfo.value?.has_password)
+  return { username, walletAddress, walletName, permissions, createdAt, hasPassword }
+})
+const showSearch = computed(() => !showQuotaManage.value && !showAddressBook.value)
+const showListHeader = computed(() => !showQuotaManage.value && !showAddressBook.value)
+const searchKeyword = computed({
+  get: () => {
+    if (showRecycle.value) return recycleSearch.value
+  if (showShare.value) return shareTab.value === 'link' ? shareLinkSearch.value : shareDirectSearch.value
+  if (showSharedWithMe.value) return sharedSearch.value
+  return fileSearch.value
+  },
+  set: (value: string) => {
+    if (showRecycle.value) {
+      recycleSearch.value = value
+      return
+    }
+    if (showShare.value) {
+      if (shareTab.value === 'link') {
+        shareLinkSearch.value = value
+      } else {
+        shareDirectSearch.value = value
+      }
+      return
+    }
+    if (showSharedWithMe.value) {
+      sharedSearch.value = value
+      return
+    }
+    fileSearch.value = value
+  }
+})
+const searchPlaceholder = computed(() => {
+  if (showRecycle.value) return '搜索回收站'
+  if (showShare.value) return shareTab.value === 'link' ? '搜索分享链接' : '搜索定向分享'
+  if (showSharedWithMe.value) return sharedActive.value ? '搜索共享内容' : '搜索共享列表'
+  return '搜索文件或目录'
+})
+const detailTitle = computed(() => {
+  if (detailMode.value === 'recycle') return '回收站详情'
+  if (detailMode.value === 'share') return '分享详情'
+  if (detailMode.value === 'directShare') return '定向分享详情'
+  if (detailMode.value === 'receivedShare') return '共享详情'
+  if (detailMode.value === 'sharedEntry') {
+    return detailSharedEntry.value?.isDir ? '共享目录详情' : '共享文件详情'
+  }
+  if (detailMode.value === 'file') {
+    return detailFile.value?.isDir ? '目录详情' : '文件详情'
+  }
+  return '详情信息'
+})
+const detailFile = computed(() => (detailMode.value === 'file' ? (detailItem.value as FileItem | null) : null))
+const detailRecycle = computed(() => (detailMode.value === 'recycle' ? (detailItem.value as RecycleItem | null) : null))
+const detailShare = computed(() => (detailMode.value === 'share' ? (detailItem.value as ShareItem | null) : null))
+const detailDirectShare = computed(() => (detailMode.value === 'directShare' ? (detailItem.value as DirectShareItem | null) : null))
+const detailReceivedShare = computed(() => (detailMode.value === 'receivedShare' ? (detailItem.value as DirectShareItem | null) : null))
+const detailSharedEntry = computed(() => (detailMode.value === 'sharedEntry' ? (detailItem.value as FileItem | null) : null))
+const groupedContacts = computed(() => {
+  const groupId = shareUserForm.value.groupId
+  if (shareUserForm.value.targetMode !== 'group') return []
+  if (!groupId) {
+    return addressContacts.value.filter(item => !item.groupId)
+  }
+  return addressContacts.value.filter(item => item.groupId === groupId)
 })
 const quotaAvailable = computed(() => {
   if (quota.value.unlimited) return null
@@ -70,6 +205,65 @@ const breadcrumbItems = computed(() => {
   }
   return items
 })
+const sharedBreadcrumbItems = computed(() => {
+  if (!sharedActive.value) return []
+  const parts = sharedPath.value.split('/').filter(Boolean)
+  const items: { name: string; path: string }[] = []
+  let acc = ''
+  for (const part of parts) {
+    acc += '/' + part
+    items.push({ name: part, path: acc + '/' })
+  }
+  return items
+})
+const searchToken = computed(() => searchKeyword.value.trim().toLowerCase())
+const filteredFileList = computed(() => {
+  const token = searchToken.value
+  if (!token) return fileList.value
+  return fileList.value.filter(item => item.name.toLowerCase().includes(token))
+})
+const filteredRecycleList = computed(() => {
+  const token = searchToken.value
+  if (!token) return recycleList.value
+  return recycleList.value.filter(item => {
+    const nameMatch = item.name.toLowerCase().includes(token)
+    if (nameMatch) return true
+    return item.path?.toLowerCase().includes(token) || false
+  })
+})
+const filteredShareList = computed(() => {
+  const token = searchToken.value
+  if (!token) return shareList.value
+  return shareList.value.filter(item => {
+    if (item.name.toLowerCase().includes(token)) return true
+    if (item.path?.toLowerCase().includes(token)) return true
+    return item.url?.toLowerCase().includes(token) || false
+  })
+})
+const filteredDirectShareList = computed(() => {
+  const token = searchToken.value
+  if (!token) return directShareList.value
+  return directShareList.value.filter(item => {
+    if (item.name.toLowerCase().includes(token)) return true
+    if (item.path?.toLowerCase().includes(token)) return true
+    return item.targetWallet?.toLowerCase().includes(token) || false
+  })
+})
+const filteredSharedWithMeList = computed(() => {
+  const token = searchToken.value
+  if (!token) return sharedWithMeList.value
+  return sharedWithMeList.value.filter(item => {
+    if (item.name.toLowerCase().includes(token)) return true
+    if (item.ownerName?.toLowerCase().includes(token)) return true
+    return item.ownerWallet?.toLowerCase().includes(token) || false
+  })
+})
+const filteredSharedEntries = computed(() => {
+  const token = searchToken.value
+  if (!token) return sharedEntries.value
+  return sharedEntries.value.filter(item => item.name.toLowerCase().includes(token))
+})
+const API_BASE = import.meta.env.VITE_API_BASE || ''
 
 function encodePath(path: string): string {
   if (!path) return '/'
@@ -92,6 +286,28 @@ function ensureAuthCookie(token: string): void {
 
 function buildDavPath(path: string): string {
   return encodePath(path)
+}
+
+async function confirmAction(message: string, title = '提示'): Promise<boolean> {
+  try {
+    await ElMessageBox.confirm(message, title, {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      type: 'warning',
+      closeOnClickModal: false
+    })
+    return true
+  } catch {
+    return false
+  }
+}
+
+function showError(message: string, title = '错误'): void {
+  void ElMessageBox.alert(message, title, {
+    confirmButtonText: '确定',
+    type: 'error',
+    closeOnClickModal: false
+  })
 }
 
 // 获取文件列表 (WebDAV PROPFIND)
@@ -121,6 +337,7 @@ async function fetchFiles(path: string = '/') {
 
     // 先更新 currentPath，再解析
     currentPath.value = path
+    localStorage.setItem(FILE_PATH_STORAGE_KEY, currentPath.value)
     fileList.value = parsePropfindResponse(text, currentPath.value)
     console.log('parsed items:', fileList.value)
   } catch (error) {
@@ -178,6 +395,90 @@ async function fetchUserCenter() {
   }
 }
 
+
+function startEditUsername() {
+  usernameDraft.value = userProfile.value.username || ''
+  editingUsername.value = true
+}
+
+function cancelEditUsername() {
+  editingUsername.value = false
+  usernameDraft.value = ''
+}
+
+async function submitUsername() {
+  const nextName = usernameDraft.value.trim()
+  if (!nextName) {
+    showError('用户名不能为空')
+    return
+  }
+  if (nextName === userProfile.value.username) {
+    cancelEditUsername()
+    return
+  }
+  usernameSaving.value = true
+  try {
+    const data = await userApi.updateUsername(nextName)
+    const finalName = data?.username || nextName
+    if (userInfo.value) {
+      userInfo.value.username = finalName
+    }
+    localStorage.setItem('username', finalName)
+    const currentAccount = localStorage.getItem('currentAccount')
+    if (!userInfo.value?.wallet_address || currentAccount === userProfile.value.username) {
+      localStorage.setItem('currentAccount', finalName)
+    }
+    showSuccess('用户名已更新')
+    editingUsername.value = false
+  } catch (error: any) {
+    console.error('更新用户名失败:', error)
+    showError(error?.message || '更新用户名失败')
+  } finally {
+    usernameSaving.value = false
+  }
+}
+
+function openPasswordDialog() {
+  passwordForm.value = {
+    oldPassword: '',
+    newPassword: '',
+    confirmPassword: ''
+  }
+  passwordDialogVisible.value = true
+}
+
+async function submitPassword() {
+  const oldPassword = passwordForm.value.oldPassword
+  const newPassword = passwordForm.value.newPassword
+  const confirmPassword = passwordForm.value.confirmPassword
+  if (!newPassword || newPassword.length < 6) {
+    showError('新密码至少 6 位')
+    return
+  }
+  if (newPassword !== confirmPassword) {
+    showError('两次输入的密码不一致')
+    return
+  }
+  if (userProfile.value.hasPassword && !oldPassword) {
+    showError('请输入旧密码')
+    return
+  }
+  passwordSubmitting.value = true
+  try {
+    await userApi.updatePassword(userProfile.value.hasPassword ? oldPassword : null, newPassword)
+    if (userInfo.value) {
+      userInfo.value.has_password = true
+    }
+    showSuccess('密码已更新')
+    passwordDialogVisible.value = false
+  } catch (error: any) {
+    console.error('更新密码失败:', error)
+    showError(error?.message || '更新密码失败')
+  } finally {
+    passwordSubmitting.value = false
+  }
+}
+
 // 进入目录
 function enterDirectory(item: FileItem) {
   if (item.isDir) {
@@ -190,12 +491,83 @@ function enterDirectory(item: FileItem) {
   }
 }
 
-// 单击行进入目录（回收站模式不响应）
-function handleRowClick(row: FileItem) {
-  if (showRecycle.value || showShare.value || showQuotaManage.value) return
-  if (row.isDir) {
-    enterDirectory(row)
+function enterSharedDirectory(item: FileItem) {
+  if (!item.isDir || !sharedActive.value) return
+  let path = item.path
+  if (!path.endsWith('/')) {
+    path += '/'
   }
+  detailDrawerVisible.value = false
+  sharedPath.value = path
+  persistSharedState()
+  fetchSharedEntries(path)
+}
+
+function setSharedPath(path: string) {
+  detailDrawerVisible.value = false
+  sharedPath.value = path
+  persistSharedState()
+  fetchSharedEntries(path)
+}
+
+// 单击行进入目录（回收站模式不响应）
+function openDetailDrawer(mode: 'file' | 'recycle', item: FileItem | RecycleItem) {
+  detailItem.value = item
+  detailMode.value = mode
+  detailDrawerVisible.value = true
+}
+
+function openShareDetail(mode: 'share' | 'directShare' | 'receivedShare', item: ShareItem | DirectShareItem) {
+  detailItem.value = item
+  detailMode.value = mode
+  detailDrawerVisible.value = true
+}
+
+function openSharedEntryDetail(item: FileItem) {
+  detailItem.value = item
+  detailMode.value = 'sharedEntry'
+  detailDrawerVisible.value = true
+}
+
+function handleRowClick(row: FileItem | RecycleItem | ShareItem | DirectShareItem) {
+  if (showQuotaManage.value || showAddressBook.value) return
+  if (showRecycle.value) {
+    openDetailDrawer('recycle', row as RecycleItem)
+    return
+  }
+  if (showShare.value) {
+    if (shareTab.value === 'link') {
+      openShareDetail('share', row as ShareItem)
+    } else {
+      openShareDetail('directShare', row as DirectShareItem)
+    }
+    return
+  }
+  if (showSharedWithMe.value) {
+    if (!sharedActive.value) {
+      const item = row as DirectShareItem
+      if (item.isDir) {
+        enterSharedRoot(item)
+      } else {
+        openShareDetail('receivedShare', item)
+      }
+      return
+    }
+    const entry = row as FileItem
+    if (entry.isDir) {
+      enterSharedDirectory(entry)
+    } else {
+      openSharedEntryDetail(entry)
+    }
+    return
+  }
+  const item = row as FileItem
+  if (item.isDir) {
+    detailDrawerVisible.value = false
+    enterDirectory(item)
+    return
+  }
+  openDetailDrawer('file', item)
 }
 
 // 刷新当前视图
@@ -203,38 +575,39 @@ function refreshCurrentView() {
   if (showRecycle.value) {
     fetchRecycle()
   } else if (showShare.value) {
-    fetchShare()
+    if (shareTab.value === 'link') {
+      fetchShare()
+    } else {
+      fetchDirectShareList()
+    }
+  } else if (showSharedWithMe.value) {
+    if (sharedActive.value) {
+      fetchSharedEntries(sharedPath.value)
+    } else {
+      fetchSharedWithMe()
+    }
   } else if (showQuotaManage.value) {
     fetchUserCenter()
+  } else if (showAddressBook.value) {
+    addressBookStore.fetchAddressBook()
   } else {
     fetchFiles(currentPath.value)
   }
 }
 
-async function copyText(text: string, successMessage: string) {
-  try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text)
-    } else {
-      const textarea = document.createElement('textarea')
-      textarea.value = text
-      textarea.setAttribute('readonly', 'true')
-      textarea.style.position = 'fixed'
-      textarea.style.opacity = '0'
-      document.body.appendChild(textarea)
-      textarea.select()
-      document.execCommand('copy')
-      document.body.removeChild(textarea)
-    }
-    ElMessage.success(successMessage)
-  } catch (error) {
-    console.error('复制失败:', error)
-    ElMessage.error('复制失败')
-  }
-}
-
 async function copyCurrentPath() {
-  const text = showRecycle.value ? '回收站' : currentPath.value
+  let text = currentPath.value
+  if (showRecycle.value) {
+    text = '回收站'
+  } else if (showSharedWithMe.value) {
+    if (sharedActive.value) {
+      text = `${sharedActive.value.name}${sharedPath.value}`
+    } else {
+      text = '共享给我'
+    }
+  } else if (showAddressBook.value) {
+    text = '地址簿'
+  }
   await copyText(text, '已复制当前路径')
 }
 
@@ -247,8 +620,23 @@ function goParent() {
   fetchFiles(parentPath)
 }
 
+function goSharedParent() {
+  if (sharedPath.value === '/') return
+  const parts = sharedPath.value.split('/').filter(Boolean)
+  parts.pop()
+  const parentPath = parts.length > 0 ? '/' + parts.join('/') + '/' : '/'
+  detailDrawerVisible.value = false
+  sharedPath.value = parentPath
+  persistSharedState()
+  fetchSharedEntries(parentPath)
+}
+
 // 下载文件
 async function downloadFile(item: FileItem) {
+  if (isSharedBrowse.value) {
+    await downloadSharedFile(item)
+    return
+  }
   const apiPath = buildApiPath(item.path)
 
   uploadProgress.value = '下载中...'
@@ -264,7 +652,7 @@ async function downloadFile(item: FileItem) {
     a.click()
     document.body.removeChild(a)
   } catch (error) {
-    alert(`下载失败: ${error}`)
+    showError(`下载失败: ${String(error)}`)
   } finally {
     window.setTimeout(() => {
       uploadProgress.value = null
@@ -272,44 +660,227 @@ async function downloadFile(item: FileItem) {
   }
 }
 
-async function renameItem(item: FileItem) {
-  if (item.path === '/') return
+function buildShareUserUrl(path: string, params?: URLSearchParams) {
+  const base = API_BASE ? API_BASE.replace(/\/+$/, '') : ''
+  const query = params ? `?${params.toString()}` : ''
+  return `${base}${path}${query}`
+}
 
+function normalizeShareRelative(path: string) {
+  return path.replace(/^\/+/, '').replace(/\/$/, '')
+}
+
+function formatRecycleFullPath(path: string): string {
+  const trimmed = String(path || '').replace(/^\/+/, '').replace(/\/+$/, '')
+  if (!trimmed) return '/'
+  return '/' + trimmed
+}
+
+function formatRecycleLocation(path: string): string {
+  const trimmed = String(path || '').replace(/^\/+/, '').replace(/\/+$/, '')
+  if (!trimmed) return '/'
+  const parts = trimmed.split('/').filter(Boolean)
+  if (parts.length <= 1) return '/'
+  return '/' + parts.slice(0, -1).join('/')
+}
+
+function normalizeSharePath(path: string): string {
+  if (!path) return '/'
+  let cleaned = path.trim()
+  if (!cleaned.startsWith('/')) cleaned = '/' + cleaned
+  cleaned = cleaned.replace(/\/+$/, '')
+  return cleaned || '/'
+}
+
+function isSharePathAffected(targetPath: string, isDir: boolean, sharePath: string): boolean {
+  const target = normalizeSharePath(targetPath)
+  const share = normalizeSharePath(sharePath)
+  if (target === '/') return true
+  if (isDir) {
+    return share === target || share.startsWith(target + '/')
+  }
+  return share === target
+}
+
+async function revokeSharesBeforeDelete(item: FileItem): Promise<{ proceed: boolean; skipConfirm: boolean }> {
+  try {
+    const [linkShares, directShares] = await Promise.all([
+      shareApi.list(),
+      directShareApi.listMine()
+    ])
+    const affectedLink = (linkShares.items || []).filter(share => isSharePathAffected(item.path, item.isDir, share.path))
+    const affectedDirect = (directShares.items || []).filter(share => isSharePathAffected(item.path, item.isDir, share.path))
+
+    if (!affectedLink.length && !affectedDirect.length) {
+      return { proceed: true, skipConfirm: false }
+    }
+
+    const label = item.isDir ? '目录' : '文件'
+    const parts: string[] = []
+    if (affectedLink.length) parts.push(`分享链接 ${affectedLink.length} 个`)
+    if (affectedDirect.length) parts.push(`定向分享 ${affectedDirect.length} 个`)
+    const message = `检测到该${label}存在分享（${parts.join('，')}），删除后分享将失效。是否撤销分享并删除？`
+
+    if (!(await confirmAction(message, '删除确认'))) return { proceed: false, skipConfirm: true }
+
+    const revokeTasks: Promise<unknown>[] = []
+    for (const share of affectedLink) {
+      revokeTasks.push(shareApi.revoke(share.token))
+    }
+    for (const share of affectedDirect) {
+      revokeTasks.push(directShareApi.revoke(share.id))
+    }
+
+    const results = await Promise.allSettled(revokeTasks)
+    const failed = results.some(result => result.status === 'rejected')
+    if (failed) {
+      showError('撤销分享失败，已取消删除')
+      return { proceed: false, skipConfirm: true }
+    }
+    return { proceed: true, skipConfirm: true }
+  } catch (error) {
+    console.error('检测分享失败:', error)
+    if (!(await confirmAction('检测分享失败，是否继续删除？', '删除确认'))) return { proceed: false, skipConfirm: true }
+    return { proceed: true, skipConfirm: true }
+  }
+}
+
+async function downloadSharedRoot(item: DirectShareItem) {
+  if (!item || item.isDir) return
+  const params = new URLSearchParams({ shareId: item.id, path: '' })
+  const url = buildShareUserUrl('/api/v1/public/share/user/download', params)
+  uploadProgress.value = '下载中...'
+  try {
+    const token = localStorage.getItem('authToken') || ''
+    ensureAuthCookie(token)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = item.name
+    a.rel = 'noopener'
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+  } catch (error) {
+    showError(`下载失败: ${String(error)}`)
+  } finally {
+    window.setTimeout(() => {
+      uploadProgress.value = null
+    }, 800)
+  }
+}
+
+async function downloadSharedFile(item: FileItem) {
+  if (!sharedActive.value) return
+  const relPath = normalizeShareRelative(item.path)
+  const params = new URLSearchParams({ shareId: sharedActive.value.id, path: relPath })
+  const url = buildShareUserUrl('/api/v1/public/share/user/download', params)
+  uploadProgress.value = '下载中...'
+  try {
+    const token = localStorage.getItem('authToken') || ''
+    ensureAuthCookie(token)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = item.name
+    a.rel = 'noopener'
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+  } catch (error) {
+    showError(`下载失败: ${String(error)}`)
+  } finally {
+    window.setTimeout(() => {
+      uploadProgress.value = null
+    }, 800)
+  }
+}
+
+function getRenameContext(item: FileItem) {
   const rawPath = item.path.startsWith('/') ? item.path : '/' + item.path
   const isDir = item.isDir
   const normalized = isDir ? rawPath.replace(/\/$/, '') : rawPath
   const segments = normalized.split('/').filter(Boolean)
-  const oldName = segments.pop()
+  const oldName = segments.pop() || item.name || ''
   const parentPath = segments.length ? '/' + segments.join('/') + '/' : '/'
+  return { rawPath, isDir, normalized, oldName, parentPath }
+}
 
-  const newName = prompt('请输入新的名称', oldName || '')
-  if (!newName || newName === oldName) return
+function openRenameDialog(item: FileItem, mode: 'file' | 'shared') {
+  if (item.path === '/') return
+  const context = getRenameContext(item)
+  renameTarget.value = item
+  renameMode.value = mode
+  renameForm.value = { name: context.oldName }
+  renameDialogVisible.value = true
+}
+
+function renameItem(item: FileItem) {
+  if (isSharedBrowse.value) {
+    renameSharedItem(item)
+    return
+  }
+  openRenameDialog(item, 'file')
+}
+
+function renameSharedItem(item: FileItem) {
+  if (!sharedActive.value || !sharedCanUpdate.value) return
+  openRenameDialog(item, 'shared')
+}
+
+async function submitRename() {
+  if (!renameTarget.value || !renameMode.value) return
+  const context = getRenameContext(renameTarget.value)
+  const newName = renameForm.value.name.trim()
+  if (!newName) {
+    showError('请输入新的名称')
+    return
+  }
+  if (newName === context.oldName) {
+    renameDialogVisible.value = false
+    return
+  }
   if (newName.includes('/')) {
-    alert('名称不能包含 "/"')
+    showError('名称不能包含 "/"')
+    return
+  }
+  const peerList = renameMode.value === 'shared' ? sharedEntries.value : fileList.value
+  const hasSameName = peerList.some(item => item.name === newName && item.path !== renameTarget.value?.path)
+  if (hasSameName) {
+    showError('同名文件或目录已存在')
     return
   }
 
-  const sourcePath = isDir ? normalized + '/' : normalized
-  const destinationPath = (parentPath === '/' ? '/' + newName : parentPath + newName) + (isDir ? '/' : '')
-
+  renameSubmitting.value = true
   try {
-    const token = localStorage.getItem('authToken') || ''
-    const response = await fetch(buildApiPath(sourcePath), {
-      method: 'MOVE',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Destination': buildDavPath(destinationPath),
-        'Overwrite': 'F'
+    if (renameMode.value === 'file') {
+      const sourcePath = context.isDir ? context.normalized + '/' : context.normalized
+      const destinationPath = (context.parentPath === '/' ? '/' + newName : context.parentPath + newName) + (context.isDir ? '/' : '')
+      const token = localStorage.getItem('authToken') || ''
+      const response = await fetch(buildApiPath(sourcePath), {
+        method: 'MOVE',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Destination': buildDavPath(destinationPath),
+          'Overwrite': 'F'
+        }
+      })
+
+      if (!response.ok) {
+        throw new Error(`重命名失败: ${response.status}`)
       }
-    })
-
-    if (!response.ok) {
-      throw new Error(`重命名失败: ${response.status}`)
+      await fetchFiles(currentPath.value)
+    } else {
+      if (!sharedActive.value || !sharedCanUpdate.value) return
+      const fromPath = context.normalized.replace(/^\/+/, '')
+      const toPath = (context.parentPath === '/' ? '/' + newName : context.parentPath + newName).replace(/^\/+/, '')
+      await directShareApi.rename(sharedActive.value.id, fromPath, toPath)
+      fetchSharedEntries(sharedPath.value)
     }
-
-    await fetchFiles(currentPath.value)
-  } catch (error) {
-    alert(`重命名失败: ${error}`)
+    renameDialogVisible.value = false
+  } catch (error: any) {
+    console.error('重命名失败:', error)
+    showError(error?.message || '重命名失败')
+  } finally {
+    renameSubmitting.value = false
   }
 }
 
@@ -342,60 +913,412 @@ async function shareFile(item: FileItem) {
     await copyText(url, '分享链接已复制')
   } catch (error) {
     console.error('创建分享失败:', error)
-    ElMessage.error('创建分享失败')
+    showError('创建分享失败')
   }
 }
 
-// 上传文件
+// 上传文件/目录（含空目录）
 const fileInput = ref<HTMLInputElement | null>(null)
+const directoryInput = ref<HTMLInputElement | null>(null)
 
 function triggerUpload() {
   fileInput.value?.click()
 }
 
-async function handleFileSelect(event: Event) {
-  const input = event.target as HTMLInputElement
-  const file = input.files?.[0]
-  if (!file) return
+async function triggerDirectoryUpload() {
+  const picker = (window as Window & { showDirectoryPicker?: () => Promise<any> }).showDirectoryPicker
+  if (picker) {
+    try {
+      const handle = await picker()
+      const files: UploadItem[] = []
+      const directories = new Set<string>()
+      await walkDirectoryHandle(handle, '', files, directories)
+      if (files.length || directories.size) {
+        await uploadFilesWithDirectories(files, directories)
+      }
+      return
+    } catch (error: any) {
+      if (error?.name === 'AbortError') return
+      console.warn('目录选择失败，切换为浏览器目录选择:', error)
+    }
+  }
+  directoryInput.value?.click()
+}
 
-  uploadProgress.value = '上传中...'
-  const cleanPath = currentPath.value.replace(/^\//, '').replace(/\/$/, '')
-  const targetPath = cleanPath ? '/' + cleanPath + '/' + file.name : '/' + file.name
-  const apiPath = buildApiPath(targetPath)
-  try {
-    const token = localStorage.getItem('authToken') || ''
-    const formData = new FormData()
-    formData.append('file', file)
+function normalizeRelativePath(path: string): string {
+  return path.replace(/^\/+/, '').replace(/\\/g, '/').replace(/\/+/g, '/')
+}
 
+async function ensureDirectories(path: string, ensured: Set<string>, token: string) {
+  const trimmed = normalizeRelativePath(path)
+  if (!trimmed) return
+  const segments = trimmed.split('/').filter(Boolean)
+  let current = ''
+  for (const segment of segments) {
+    current += '/' + segment
+    if (ensured.has(current)) continue
+    const apiPath = buildApiPath(current)
     const response = await fetch(apiPath, {
-      method: 'PUT',
+      method: 'MKCOL',
       headers: {
         'Authorization': `Bearer ${token}`
-      },
-      body: formData
+      }
     })
-
-    if (!response.ok) {
-      throw new Error('上传失败')
+    // 201 = 创建成功, 405 = 已存在
+    if (response.ok || response.status === 405) {
+      ensured.add(current)
+      continue
     }
+    throw new Error(`创建目录失败: ${response.status}`)
+  }
+}
 
-    uploadProgress.value = '上传完成'
+async function readAllDirectoryEntries(reader: {
+  readEntries: (success: (entries: DropEntry[]) => void, error?: (error: Error) => void) => void
+}): Promise<DropEntry[]> {
+  const entries: DropEntry[] = []
+  return new Promise((resolve, reject) => {
+    const readBatch = () => {
+      reader.readEntries(
+        batch => {
+          if (!batch.length) {
+            resolve(entries)
+            return
+          }
+          entries.push(...batch)
+          readBatch()
+        },
+        error => reject(error)
+      )
+    }
+    readBatch()
+  })
+}
+
+async function walkDirectoryHandle(
+  handle: any,
+  parentPath: string,
+  files: UploadItem[],
+  directories: Set<string>
+): Promise<void> {
+  const dirPath = parentPath ? `${parentPath}/${handle.name}` : handle.name
+  if (dirPath) directories.add(normalizeRelativePath(dirPath))
+  const entries = handle.entries?.()
+  if (!entries) return
+  for await (const [name, entry] of entries) {
+    if (entry.kind === 'directory') {
+      await walkDirectoryHandle(entry, dirPath, files, directories)
+    } else if (entry.kind === 'file') {
+      const file = await entry.getFile()
+      const relativePath = dirPath ? `${dirPath}/${name}` : name
+      files.push({ file, relativePath })
+    }
+  }
+}
+
+async function walkEntry(entry: DropEntry, files: UploadItem[], directories: Set<string>): Promise<void> {
+  const rawPath = entry.fullPath || entry.name || ''
+  const relativePath = normalizeRelativePath(rawPath)
+  if (entry.isDirectory) {
+    if (relativePath) directories.add(relativePath)
+    const reader = entry.createReader?.()
+    if (!reader) return
+    const children = await readAllDirectoryEntries(reader)
+    if (!children.length) return
+    for (const child of children) {
+      await walkEntry(child, files, directories)
+    }
+    return
+  }
+  if (entry.isFile) {
+    if (!entry.file) return
+    const file = await new Promise<File>((resolve, reject) => {
+      entry.file?.(resolve, reject)
+    })
+    files.push({ file, relativePath: relativePath || file.name })
+  }
+}
+
+async function uploadFilesWithDirectories(files: UploadItem[], extraDirectories?: Set<string>) {
+  const cleanPath = currentPath.value.replace(/^\//, '').replace(/\/$/, '')
+  const errors: Array<{ name: string; error: unknown }> = []
+  const ensuredDirs = new Set<string>()
+  const token = localStorage.getItem('authToken') || ''
+  let completed = 0
+  let createdDirs = 0
+
+  const directories = new Set<string>()
+  if (extraDirectories) {
+    for (const dir of extraDirectories) {
+      const safeDir = normalizeRelativePath(dir)
+      if (safeDir) directories.add(safeDir)
+    }
+  }
+  for (const item of files) {
+    const safeRelative = normalizeRelativePath(item.relativePath || item.file.name)
+    item.relativePath = safeRelative
+    const relativeDir = safeRelative.includes('/') ? safeRelative.slice(0, safeRelative.lastIndexOf('/')) : ''
+    if (relativeDir) directories.add(relativeDir)
+  }
+
+  const dirsToCreate = Array.from(directories).filter(Boolean).sort((a, b) => a.split('/').length - b.split('/').length)
+  for (const dir of dirsToCreate) {
+    const targetDir = cleanPath ? '/' + cleanPath + '/' + dir : '/' + dir
+    try {
+      uploadProgress.value = `创建目录: ${dir}`
+      await ensureDirectories(targetDir, ensuredDirs, token)
+      createdDirs += 1
+    } catch (error) {
+      errors.push({ name: dir, error })
+      console.error('创建目录失败:', dir, error)
+    }
+  }
+
+  for (const item of files) {
+    uploadProgress.value = `上传中 ${completed + 1}/${files.length}: ${item.relativePath}`
+    const targetPath = cleanPath ? '/' + cleanPath + '/' + item.relativePath : '/' + item.relativePath
+    const apiPath = buildApiPath(targetPath)
+    try {
+      const formData = new FormData()
+      formData.append('file', item.file)
+
+      const response = await fetch(apiPath, {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        },
+        body: formData
+      })
+
+      if (!response.ok) {
+        throw new Error('上传失败')
+      }
+
+      completed += 1
+    } catch (error) {
+      errors.push({ name: item.relativePath, error })
+      console.error('上传失败:', item.relativePath, error)
+    }
+  }
+
+  const totalTasks = files.length + dirsToCreate.length
+  const successCount = completed + createdDirs
+
+  if (totalTasks > 0) {
     // 等待文件完全写入后再刷新列表
     await new Promise(resolve => setTimeout(resolve, 500))
     await fetchFiles(currentPath.value)
-    // 等待 Vue 更新 DOM 后再清除进度
+  }
+
+  if (errors.length > 0) {
+    uploadProgress.value = `完成 ${successCount}/${totalTasks}，失败 ${errors.length} 个`
+  } else if (totalTasks > 0) {
+    uploadProgress.value = '上传完成'
     await nextTick()
     uploadProgress.value = null
-  } catch (error) {
-    uploadProgress.value = `上传失败: ${error}`
   }
+}
+
+async function ensureSharedDirectories(path: string, ensured: Set<string>, shareId: string) {
+  const trimmed = normalizeRelativePath(path)
+  if (!trimmed) return
+  const segments = trimmed.split('/').filter(Boolean)
+  let current = ''
+  for (const segment of segments) {
+    current = current ? `${current}/${segment}` : segment
+    if (ensured.has(current)) continue
+    try {
+      await directShareApi.createFolder(shareId, current)
+      ensured.add(current)
+    } catch (error) {
+      throw error
+    }
+  }
+}
+
+async function uploadSharedFilesWithDirectories(files: UploadItem[], extraDirectories?: Set<string>) {
+  if (!sharedActive.value) return
+  const shareId = sharedActive.value.id
+  const errors: Array<{ name: string; error: unknown }> = []
+  const ensuredDirs = new Set<string>()
+  let completed = 0
+  let createdDirs = 0
+
+  const directories = new Set<string>()
+  if (extraDirectories) {
+    for (const dir of extraDirectories) {
+      const safeDir = normalizeRelativePath(dir)
+      if (safeDir) directories.add(safeDir)
+    }
+  }
+  for (const item of files) {
+    const safeRelative = normalizeRelativePath(item.relativePath || item.file.name)
+    item.relativePath = safeRelative
+    const relativeDir = safeRelative.includes('/') ? safeRelative.slice(0, safeRelative.lastIndexOf('/')) : ''
+    if (relativeDir) directories.add(relativeDir)
+  }
+
+  const dirsToCreate = Array.from(directories).filter(Boolean).sort((a, b) => a.split('/').length - b.split('/').length)
+  for (const dir of dirsToCreate) {
+    try {
+      uploadProgress.value = `创建目录: ${dir}`
+      await ensureSharedDirectories(dir, ensuredDirs, shareId)
+      createdDirs += 1
+    } catch (error) {
+      errors.push({ name: dir, error })
+      console.error('创建目录失败:', dir, error)
+    }
+  }
+
+  const token = localStorage.getItem('authToken') || ''
+  for (const item of files) {
+    uploadProgress.value = `上传中 ${completed + 1}/${files.length}: ${item.relativePath}`
+    const relPath = normalizeRelativePath(item.relativePath || item.file.name)
+    const params = new URLSearchParams({ shareId, path: relPath })
+    const apiPath = buildShareUserUrl('/api/v1/public/share/user/upload', params)
+    try {
+      const formData = new FormData()
+      formData.append('file', item.file)
+
+      const response = await fetch(apiPath, {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        },
+        body: formData
+      })
+
+      if (!response.ok) {
+        throw new Error('上传失败')
+      }
+
+      completed += 1
+    } catch (error) {
+      errors.push({ name: item.relativePath, error })
+      console.error('上传失败:', item.relativePath, error)
+    }
+  }
+
+  const totalTasks = files.length + dirsToCreate.length
+  const successCount = completed + createdDirs
+
+  if (totalTasks > 0) {
+    await new Promise(resolve => setTimeout(resolve, 500))
+    await fetchSharedEntries(sharedPath.value)
+  }
+
+  if (errors.length > 0) {
+    uploadProgress.value = `完成 ${successCount}/${totalTasks}，失败 ${errors.length} 个`
+  } else if (totalTasks > 0) {
+    uploadProgress.value = '上传完成'
+    await nextTick()
+    uploadProgress.value = null
+  }
+}
+
+async function handleFileSelect(event: Event) {
+  const input = event.target as HTMLInputElement
+  const fileList = input.files ? Array.from(input.files) : []
+  if (!fileList.length) {
+    if (input === directoryInput.value) {
+      showInfo('目录内没有可上传的文件，空目录请使用拖拽上传')
+    }
+    return
+  }
+
+  if (isSharedBrowse.value) {
+    const items = fileList.map(file => ({
+      file,
+      relativePath: (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name
+    }))
+    await uploadSharedFilesWithDirectories(items)
+    input.value = ''
+    return
+  }
+
+  const items = fileList.map(file => ({
+    file,
+    relativePath: (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name
+  }))
+  await uploadFilesWithDirectories(items)
+
   // 清空 input，允许重复上传同一文件
   input.value = ''
 }
 
+function handleDragEnter(event: DragEvent) {
+  event.preventDefault()
+  if (!canUpload.value) return
+  dragCounter.value += 1
+  dragActive.value = true
+}
+
+function handleDragOver(event: DragEvent) {
+  event.preventDefault()
+}
+
+function handleDragLeave(event: DragEvent) {
+  event.preventDefault()
+  if (!canUpload.value) return
+  dragCounter.value = Math.max(dragCounter.value - 1, 0)
+  if (dragCounter.value === 0) {
+    dragActive.value = false
+  }
+}
+
+async function handleDrop(event: DragEvent) {
+  event.preventDefault()
+  dragCounter.value = 0
+  dragActive.value = false
+  if (!canUpload.value) return
+
+  const dataTransfer = event.dataTransfer
+  if (!dataTransfer) return
+
+  const files: UploadItem[] = []
+  const directories = new Set<string>()
+  const items = dataTransfer.items ? Array.from(dataTransfer.items) : []
+
+  const entries: DropEntry[] = []
+  for (const item of items) {
+    if (item.kind !== 'file') continue
+    const entry = (item as unknown as { webkitGetAsEntry?: () => DropEntry | null }).webkitGetAsEntry?.()
+    if (entry) entries.push(entry)
+  }
+
+  if (entries.length > 0) {
+    for (const entry of entries) {
+      try {
+        await walkEntry(entry, files, directories)
+      } catch (error) {
+        console.error('读取拖拽条目失败:', error)
+      }
+    }
+  } else {
+    const droppedFiles = dataTransfer.files ? Array.from(dataTransfer.files) : []
+    for (const file of droppedFiles) {
+      const relativePath = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name
+      files.push({ file, relativePath })
+    }
+  }
+
+  if (!files.length && directories.size === 0) return
+  if (isSharedBrowse.value) {
+    await uploadSharedFilesWithDirectories(files, directories)
+  } else {
+    await uploadFilesWithDirectories(files, directories)
+  }
+}
+
 // 删除文件
 async function deleteFile(item: FileItem) {
-  if (!confirm(`确定删除 ${item.name} 吗？删除后可在回收站恢复`)) return
+  if (isSharedBrowse.value) {
+    await deleteSharedItem(item)
+    return
+  }
+  const { proceed, skipConfirm } = await revokeSharesBeforeDelete(item)
+  if (!proceed) return
+  if (!skipConfirm && !(await confirmAction(`确定删除 ${item.name} 吗？删除后可在回收站恢复`, '删除确认'))) return
 
   const apiPath = buildApiPath(item.path)
   try {
@@ -413,7 +1336,19 @@ async function deleteFile(item: FileItem) {
 
     fetchFiles(currentPath.value)
   } catch (error) {
-    alert(`删除失败: ${error}`)
+    showError(`删除失败: ${String(error)}`)
+  }
+}
+
+async function deleteSharedItem(item: FileItem) {
+  if (!sharedActive.value || !sharedCanDelete.value) return
+  if (!(await confirmAction(`确定删除 ${item.name} 吗？`, '删除确认'))) return
+  const relPath = normalizeShareRelative(item.path)
+  try {
+    await directShareApi.remove(sharedActive.value.id, relPath)
+    fetchSharedEntries(sharedPath.value)
+  } catch (error) {
+    showError(`删除失败: ${String(error)}`)
   }
 }
 
@@ -432,39 +1367,74 @@ async function fetchRecycle() {
 
 // 进入回收站
 function enterRecycle() {
+  detailDrawerVisible.value = false
   showRecycle.value = true
   showShare.value = false
+  showSharedWithMe.value = false
   showQuotaManage.value = false
+  showAddressBook.value = false
+  sharedActive.value = null
+  sharedPath.value = '/'
+  persistView('recycle')
   fetchRecycle()
 }
 
 // 返回文件列表
-function backToFiles() {
+function enterFiles(path: string = currentPath.value) {
+  detailDrawerVisible.value = false
   showRecycle.value = false
   showShare.value = false
+  showSharedWithMe.value = false
   showQuotaManage.value = false
-  fetchFiles(currentPath.value)
+  showAddressBook.value = false
+  sharedActive.value = null
+  sharedPath.value = '/'
+  persistView('files')
+  fetchFiles(path)
+}
+
+function backToFiles() {
+  enterFiles(currentPath.value)
 }
 
 // 恢复文件
 async function recoverFile(item: RecycleItem) {
-  if (!confirm(`确定恢复 ${item.name} 吗？`)) return
+  if (!(await confirmAction(`确定恢复 ${item.name} 吗？`, '恢复文件'))) return
   try {
     await recycleApi.recover(item.hash)
     fetchRecycle()
   } catch (error) {
-    alert(`恢复失败: ${error}`)
+    showError(`恢复失败: ${String(error)}`)
   }
 }
 
 // 永久删除文件
 async function permanentlyDelete(item: RecycleItem) {
-  if (!confirm(`确定永久删除 ${item.name} 吗？此操作不可恢复！`)) return
+  if (!(await confirmAction(`确定永久删除 ${item.name} 吗？此操作不可恢复！`, '永久删除'))) return
   try {
     await recycleApi.remove(item.hash)
     fetchRecycle()
   } catch (error) {
-    alert(`删除失败: ${error}`)
+    showError(`删除失败: ${String(error)}`)
+  }
+}
+
+async function clearRecycle() {
+  if (!recycleList.value.length) {
+    showInfo('回收站为空')
+    return
+  }
+  if (!(await confirmAction('确定清空回收站吗？此操作不可恢复！', '清空回收站'))) return
+  recycleLoading.value = true
+  try {
+    await recycleApi.clear()
+    showSuccess('回收站已清空')
+    fetchRecycle()
+  } catch (error) {
+    console.error('清空回收站失败:', error)
+    showError('清空回收站失败')
+  } finally {
+    recycleLoading.value = false
   }
 }
 
@@ -481,22 +1451,122 @@ async function fetchShare() {
   }
 }
 
+// 获取我分享的（定向）列表
+async function fetchDirectShareList() {
+  directShareLoading.value = true
+  try {
+    const data = await directShareApi.listMine()
+    directShareList.value = data.items
+  } catch (error) {
+    console.error('获取定向分享列表失败:', error)
+  } finally {
+    directShareLoading.value = false
+  }
+}
+
+// 获取分享给我的列表
+async function fetchSharedWithMe() {
+  sharedWithMeLoading.value = true
+  try {
+    const data = await directShareApi.listReceived()
+    sharedWithMeList.value = data.items
+  } catch (error) {
+    console.error('获取共享给我列表失败:', error)
+  } finally {
+    sharedWithMeLoading.value = false
+  }
+}
+
+async function fetchSharedEntries(path: string = sharedPath.value) {
+  if (!sharedActive.value) return
+  sharedEntriesLoading.value = true
+  try {
+    const cleanPath = path.replace(/^\/+/, '').replace(/\/$/, '')
+    const data = await directShareApi.listEntries(sharedActive.value.id, cleanPath)
+    sharedEntries.value = data.items as FileItem[]
+  } catch (error) {
+    console.error('获取共享目录失败:', error)
+  } finally {
+    sharedEntriesLoading.value = false
+  }
+}
+
 // 进入分享管理
-function enterShare() {
+function enterShare(type: 'link' | 'direct' = shareTab.value) {
+  detailDrawerVisible.value = false
   showShare.value = true
   showRecycle.value = false
+  showSharedWithMe.value = false
   showQuotaManage.value = false
-  fetchShare()
+  showAddressBook.value = false
+  sharedActive.value = null
+  sharedPath.value = '/'
+  shareTab.value = type
+  persistView(type === 'link' ? 'shareLink' : 'shareDirect')
+  if (shareTab.value === 'link') {
+    fetchShare()
+  } else {
+    fetchDirectShareList()
+  }
+}
+
+// 进入共享给我
+function enterSharedWithMe(keepSharedState: boolean | Event = false) {
+  const shouldKeep = typeof keepSharedState === 'boolean' ? keepSharedState : false
+  detailDrawerVisible.value = false
+  showSharedWithMe.value = true
+  showShare.value = false
+  showRecycle.value = false
+  showQuotaManage.value = false
+  showAddressBook.value = false
+  sharedActive.value = null
+  sharedPath.value = '/'
+  sharedEntries.value = []
+  if (!shouldKeep) {
+    clearSharedState()
+  }
+  persistView('sharedWithMe')
+  fetchSharedWithMe()
+}
+
+// 进入共享的目录
+function enterSharedRoot(item: DirectShareItem) {
+  if (!item.isDir) return
+  detailDrawerVisible.value = false
+  sharedActive.value = item
+  sharedPath.value = '/'
+  sharedEntries.value = []
+  persistSharedState()
+  fetchSharedEntries('/')
+}
+
+function backToSharedList() {
+  detailDrawerVisible.value = false
+  sharedActive.value = null
+  sharedPath.value = '/'
+  sharedEntries.value = []
+  clearSharedState()
+  fetchSharedWithMe()
 }
 
 // 取消分享
 async function revokeShare(item: ShareItem) {
-  if (!confirm(`确定取消分享 ${item.name} 吗？`)) return
+  if (!(await confirmAction(`确定取消分享 ${item.name} 吗？`, '取消分享'))) return
   try {
     await shareApi.revoke(item.token)
     fetchShare()
   } catch (error) {
-    alert(`取消分享失败: ${error}`)
+    showError(`取消分享失败: ${String(error)}`)
+  }
+}
+
+async function revokeDirectShare(item: DirectShareItem) {
+  if (!(await confirmAction(`确定取消分享 ${item.name} 吗？`, '取消分享'))) return
+  try {
+    await directShareApi.revoke(item.id)
+    fetchDirectShareList()
+  } catch (error) {
+    showError(`取消分享失败: ${String(error)}`)
   }
 }
 
@@ -505,53 +1575,213 @@ async function copyShareLink(item: ShareItem) {
   await copyText(url, '分享链接已复制')
 }
 
+function getShareLink(item: ShareItem): string {
+  return item.url || `${window.location.origin}/api/v1/public/share/${item.token}`
+}
+
+function openShareUserDialog(item: FileItem) {
+  shareUserTarget.value = item
+  shareUserForm.value = {
+    targetMode: 'single',
+    targetAddress: '',
+    groupId: '',
+    permissions: ['read'],
+    expiresIn: '0'
+  }
+  shareUserDialogVisible.value = true
+  addressBookStore.fetchAddressBook()
+}
+
+async function submitShareUser() {
+  if (!shareUserTarget.value) return
+  if (!shareUserForm.value.permissions.length) {
+    showError('请至少选择一个权限')
+    return
+  }
+
+  const hours = parseInt(shareUserForm.value.expiresIn, 10)
+  const expiresIn = Number.isFinite(hours) && hours > 0 ? hours * 3600 : 0
+  const rawPath = shareUserTarget.value.isDir
+    ? shareUserTarget.value.path.replace(/\/$/, '')
+    : shareUserTarget.value.path
+
+  shareUserSubmitting.value = true
+  try {
+    if (shareUserForm.value.targetMode === 'group') {
+      const targets = groupedContacts.value.map(item => item.walletAddress).filter(Boolean)
+      const uniqueTargets = Array.from(new Set(targets.map(addr => addr.trim()).filter(Boolean)))
+      if (!uniqueTargets.length) {
+        showError('该分组没有可用地址')
+        return
+      }
+      const tasks = uniqueTargets.map(address => directShareApi.create({
+        path: rawPath,
+        targetAddress: address,
+        permissions: shareUserForm.value.permissions,
+        expiresIn
+      }))
+      const results = await Promise.allSettled(tasks)
+      const successCount = results.filter(result => result.status === 'fulfilled').length
+      const failCount = results.length - successCount
+      if (successCount > 0) {
+        showSuccess(`已共享给 ${successCount} 位用户${failCount ? `，失败 ${failCount} 位` : ''}`)
+      } else {
+        showError('共享失败')
+        return
+      }
+    } else {
+      const targetAddress = shareUserForm.value.targetAddress.trim()
+      if (!targetAddress) {
+        showError('请输入目标钱包地址')
+        return
+      }
+      await directShareApi.create({
+        path: rawPath,
+        targetAddress,
+        permissions: shareUserForm.value.permissions,
+        expiresIn
+      })
+      showSuccess('已分享给指定用户')
+    }
+    shareUserDialogVisible.value = false
+    if (showShare.value && shareTab.value === 'direct') {
+      fetchDirectShareList()
+    }
+  } catch (error) {
+    console.error('定向分享失败:', error)
+    showError('定向分享失败')
+  } finally {
+    shareUserSubmitting.value = false
+  }
+}
+
+function enterAddressBook() {
+  detailDrawerVisible.value = false
+  showAddressBook.value = true
+  showShare.value = false
+  showRecycle.value = false
+  showSharedWithMe.value = false
+  showQuotaManage.value = false
+  sharedActive.value = null
+  sharedPath.value = '/'
+  persistView('addressBook')
+  addressBookStore.fetchAddressBook()
+}
+
 // 进入用户中心
 function enterQuotaManage() {
+  detailDrawerVisible.value = false
   showQuotaManage.value = true
   showShare.value = false
   showRecycle.value = false
+  showSharedWithMe.value = false
+  showAddressBook.value = false
+  sharedActive.value = null
+  sharedPath.value = '/'
+  persistView('quotaManage')
   fetchUserCenter()
 }
 
-// 新建文件夹
-async function createFolder() {
-  const name = prompt('请输入文件夹名称')
-  if (!name) return
+function openCreateFolderDialog(mode: 'file' | 'shared') {
+  if (mode === 'shared' && (!sharedActive.value || !sharedCanCreate.value)) return
+  createFolderMode.value = mode
+  createFolderForm.value = { name: '' }
+  createFolderDialogVisible.value = true
+}
 
-  const cleanPath = currentPath.value.replace(/^\//, '').replace(/\/$/, '')
+function createFolder() {
+  if (isSharedBrowse.value) {
+    openCreateFolderDialog('shared')
+    return
+  }
+  openCreateFolderDialog('file')
+}
+
+async function createFolderWithName(name: string) {
+  const cleanPath = currentPath.value.replace(/^\/+/, '').replace(/\/$/, '')
   const targetPath = cleanPath ? '/' + cleanPath + '/' + name : '/' + name
   const apiPath = buildApiPath(targetPath)
-  try {
-    const token = localStorage.getItem('authToken') || ''
-    const response = await fetch(apiPath, {
-      method: 'MKCOL',
-      headers: {
-        'Authorization': `Bearer ${token}`
-      }
-    })
-
-    // 201 = 创建成功, 405 = 方法不允许（通常因为已存在）
-    if (response.ok || response.status === 405) {
-      // 刷新文件列表
-      fetchFiles(currentPath.value)
-      if (response.status === 405) {
-        alert('文件夹已存在')
-      }
-    } else {
-      throw new Error(`创建失败: ${response.status}`)
+  const token = localStorage.getItem('authToken') || ''
+  const response = await fetch(apiPath, {
+    method: 'MKCOL',
+    headers: {
+      'Authorization': `Bearer ${token}`
     }
-  } catch (error) {
-    alert(`创建失败: ${error}`)
+  })
+
+  if (response.ok || response.status === 405) {
+    fetchFiles(currentPath.value)
+    if (response.status === 405) {
+      showError('文件夹已存在')
+    }
+    return
+  }
+  throw new Error(`创建失败: ${response.status}`)
+}
+
+async function createSharedFolderWithName(name: string) {
+  if (!sharedActive.value || !sharedCanCreate.value) return
+  const basePath = sharedPath.value.replace(/^\/+/, '').replace(/\/$/, '')
+  const targetPath = basePath ? `${basePath}/${name}` : name
+  await directShareApi.createFolder(sharedActive.value.id, targetPath)
+  fetchSharedEntries(sharedPath.value)
+}
+
+async function submitCreateFolder() {
+  const mode = createFolderMode.value
+  if (!mode) return
+  const name = createFolderForm.value.name.trim()
+  if (!name) {
+    showError('请输入文件夹名称')
+    return
+  }
+  if (name.includes('/')) {
+    showError('名称不能包含 "/"')
+    return
+  }
+  createFolderSubmitting.value = true
+  try {
+    if (mode === 'shared') {
+      await createSharedFolderWithName(name)
+    } else {
+      await createFolderWithName(name)
+    }
+    createFolderDialogVisible.value = false
+  } catch (error: any) {
+    console.error('创建失败:', error)
+    showError(error?.message || '创建失败')
+  } finally {
+    createFolderSubmitting.value = false
   }
 }
 
 // 格式化文件大小
 function formatSize(bytes: number): string {
-  if (bytes === 0) return '-'
-  const units = ['B', 'KB', 'MB', 'GB']
-  const k = 1024
-  const i = Math.floor(Math.log(bytes) / Math.log(k))
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + units[i]
+  const value = Number(bytes)
+  if (!Number.isFinite(value) || value < 0) return '-'
+  const units = ['B', 'K', 'M', 'G', 'T', 'P']
+  let size = value
+  let index = 0
+  while (size >= 1024 && index < units.length - 1) {
+    size /= 1024
+    index += 1
+  }
+  return `${Math.round(size)} ${units[index]}`
+}
+
+function formatSizeDetail(bytes: number): string {
+  const value = Number(bytes)
+  if (!Number.isFinite(value) || value < 0) return '-'
+  const raw = Math.trunc(value)
+  const units = ['B', 'K', 'M', 'G', 'T', 'P']
+  let size = value
+  let index = 0
+  while (size >= 1024 && index < units.length - 1) {
+    size /= 1024
+    index += 1
+  }
+  if (index === 0) return `${raw} B`
+  return `${raw} B (${size.toFixed(2)} ${units[index]})`
 }
 
 // 格式化时间
@@ -559,9 +1789,17 @@ function formatDateTime(value: string | number): string {
   if (value === null || value === undefined || value === '') return '-'
   try {
     let raw: number | string = value
-    if (typeof value === 'string' && /^\d+$/.test(value)) {
-      const asNumber = Number(value)
-      raw = value.length <= 10 ? asNumber * 1000 : asNumber
+    if (typeof value === 'string') {
+      const trimmed = value.trim()
+      if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(trimmed)) {
+        return trimmed
+      }
+      if (/^\d+$/.test(trimmed)) {
+        const asNumber = Number(trimmed)
+        raw = trimmed.length <= 10 ? asNumber * 1000 : asNumber
+      } else {
+        raw = trimmed
+      }
     }
     const date = new Date(raw)
     if (Number.isNaN(date.getTime())) return '-'
@@ -588,21 +1826,112 @@ function formatDeletedTime(timeStr: string): string {
   return formatDateTime(timeStr)
 }
 
-// 连接钱包
-async function handleConnect() {
-  try {
-    await loginWithWallet()
-    window.location.reload()
-  } catch (error) {
-    alert(`连接失败: ${error}`)
-  }
+function formatSharePermission(permission: string): string {
+  const key = permission.toLowerCase()
+  if (key === 'read') return '读取'
+  if (key === 'create') return '上传'
+  if (key === 'update') return '重命名'
+  if (key === 'delete') return '删除'
+  return permission
 }
+
+function persistView(view: ViewKey) {
+  localStorage.setItem(VIEW_STORAGE_KEY, view)
+}
+
+function clearSharedState() {
+  localStorage.removeItem(SHARED_ACTIVE_STORAGE_KEY)
+  localStorage.removeItem(SHARED_PATH_STORAGE_KEY)
+}
+
+function persistSharedState() {
+  if (!sharedActive.value) return
+  localStorage.setItem(SHARED_ACTIVE_STORAGE_KEY, sharedActive.value.id)
+  localStorage.setItem(SHARED_PATH_STORAGE_KEY, sharedPath.value)
+}
+
+async function restoreSharedWithMeView() {
+  detailDrawerVisible.value = false
+  showSharedWithMe.value = true
+  showShare.value = false
+  showRecycle.value = false
+  showQuotaManage.value = false
+  showAddressBook.value = false
+  sharedActive.value = null
+  sharedEntries.value = []
+  const storedShareId = localStorage.getItem(SHARED_ACTIVE_STORAGE_KEY)
+  const storedPath = localStorage.getItem(SHARED_PATH_STORAGE_KEY) || '/'
+  sharedPath.value = '/'
+  persistView('sharedWithMe')
+  await fetchSharedWithMe()
+  if (!storedShareId) return
+  const target = sharedWithMeList.value.find(item => item.id === storedShareId)
+  if (!target) {
+    clearSharedState()
+    return
+  }
+  sharedActive.value = target
+  sharedPath.value = storedPath || '/'
+  await fetchSharedEntries(sharedPath.value)
+}
+
+async function restoreView() {
+  const storedView = localStorage.getItem(VIEW_STORAGE_KEY) as ViewKey | null
+  if (storedView === 'recycle') {
+    enterRecycle()
+    return
+  }
+  if (storedView === 'shareLink') {
+    enterShare('link')
+    return
+  }
+  if (storedView === 'shareDirect') {
+    enterShare('direct')
+    return
+  }
+  if (storedView === 'sharedWithMe') {
+    await restoreSharedWithMeView()
+    return
+  }
+  if (storedView === 'quotaManage') {
+    enterQuotaManage()
+    return
+  }
+  if (storedView === 'addressBook') {
+    enterAddressBook()
+    return
+  }
+  const storedPath = localStorage.getItem(FILE_PATH_STORAGE_KEY) || '/'
+  enterFiles(storedPath)
+}
+
+watch(renameDialogVisible, visible => {
+  if (visible) return
+  renameTarget.value = null
+  renameMode.value = null
+  renameForm.value = { name: '' }
+})
+
+watch(createFolderDialogVisible, visible => {
+  if (visible) return
+  createFolderMode.value = null
+  createFolderForm.value = { name: '' }
+})
+
+watch(addressGroups, groups => {
+  const groupId = shareUserForm.value.groupId
+  if (!groupId) return
+  const exists = groups.some(group => group.id === groupId)
+  if (!exists) {
+    shareUserForm.value.groupId = ''
+  }
+})
 
 onMounted(() => {
   if (isLoggedIn()) {
-    fetchFiles()
     fetchQuota()
     fetchUserInfo()
+    void restoreView()
   }
 })
 </script>
@@ -611,14 +1940,10 @@ onMounted(() => {
   <div class="home-container">
     <!-- 未登录状态 -->
     <div v-if="!isLoggedIn()" class="login-page">
-      <div class="login-box">
-        <h1>WebDAV Storage</h1>
-        <p>连接钱包登录</p>
-        <el-button v-if="hasWallet()" type="primary" size="large" @click="handleConnect">
-          连接 MetaMask
-        </el-button>
-        <p v-else class="warning">请安装 MetaMask 等钱包插件</p>
+      <div class="login-hint">
+        请点击右上角“连接钱包”进行登录
       </div>
+      <div v-if="!hasWallet()" class="login-warning">未检测到钱包插件</div>
     </div>
 
     <!-- 已登录状态 -->
@@ -637,7 +1962,7 @@ onMounted(() => {
             <button
               type="button"
               class="nav-item"
-              :class="{ active: !showRecycle && !showShare && !showQuotaManage }"
+              :class="{ active: !showRecycle && !showShare && !showQuotaManage && !showSharedWithMe && !showAddressBook }"
               @click="backToFiles"
             >
               <el-icon class="nav-icon"><FolderOpened /></el-icon>
@@ -655,11 +1980,29 @@ onMounted(() => {
             <button
               type="button"
               class="nav-item"
-              :class="{ active: showShare }"
-              @click="enterShare"
+              :class="{ active: showShare && shareTab === 'link' }"
+              @click="enterShare('link')"
+            >
+              <el-icon class="nav-icon"><DocumentCopy /></el-icon>
+              <span>分享链接</span>
+            </button>
+            <button
+              type="button"
+              class="nav-item"
+              :class="{ active: showShare && shareTab === 'direct' }"
+              @click="enterShare('direct')"
             >
               <el-icon class="nav-icon"><Share /></el-icon>
-              <span>文件分享</span>
+              <span>定向分享</span>
+            </button>
+            <button
+              type="button"
+              class="nav-item"
+              :class="{ active: showSharedWithMe }"
+              @click="enterSharedWithMe"
+            >
+              <el-icon class="nav-icon"><UserFilled /></el-icon>
+              <span>共享给我</span>
             </button>
             <button
               type="button"
@@ -670,314 +2013,411 @@ onMounted(() => {
               <el-icon class="nav-icon"><User /></el-icon>
               <span>用户中心</span>
             </button>
+            <button
+              type="button"
+              class="nav-item"
+              :class="{ active: showAddressBook }"
+              @click="enterAddressBook"
+            >
+              <el-icon class="nav-icon"><DocumentCopy /></el-icon>
+              <span>地址簿</span>
+            </button>
           </div>
         </div>
       </aside>
 
       <main class="main-panel">
-        <header class="page-header">
-          <div class="header-left">
-            <div class="path-row">
-              <template v-if="showRecycle || showShare || showQuotaManage">
-                <el-button @click="backToFiles">
-                  <span class="iconfont icon-fanhui"></span> 返回文件列表
-                </el-button>
+        <section
+          class="content-card"
+          @dragenter="handleDragEnter"
+          @dragleave="handleDragLeave"
+          @dragover="handleDragOver"
+          @drop="handleDrop"
+        >
+          <div v-if="dragActive && canUpload" class="drop-mask">
+            <div class="drop-hint">拖拽文件或文件夹到此处上传（支持空目录）</div>
+          </div>
+          <div v-if="showListHeader" class="list-header">
+            <div class="list-header-left">
+              <div class="path-row">
+              <template v-if="showSharedWithMe && sharedActive">
+                <el-tooltip content="返回共享列表" placement="top">
+                  <el-button circle :icon="ArrowLeft" @click="backToSharedList" />
+                </el-tooltip>
+                <el-tooltip content="返回上级" placement="top">
+                  <el-button circle :icon="ArrowUp" @click="goSharedParent" :disabled="sharedPath === '/'" />
+                </el-tooltip>
+              </template>
+              <template v-else-if="showRecycle || showShare || showSharedWithMe">
+                <el-tooltip content="返回文件列表" placement="top">
+                  <el-button circle :icon="ArrowLeft" @click="backToFiles" />
+                </el-tooltip>
               </template>
               <template v-else>
-                <el-button @click="goParent" :disabled="currentPath === '/'">
-                  <span class="iconfont icon-fanhui"></span> 返回上级
-                </el-button>
+                <el-tooltip content="返回上级" placement="top">
+                  <el-button circle :icon="ArrowUp" @click="goParent" :disabled="currentPath === '/'" />
+                </el-tooltip>
               </template>
-              <template v-if="showRecycle">
-                <div class="path-pill">
-                  <span class="path-label">当前位置</span>
-                  <span class="path-value">回收站</span>
-                  <el-tooltip content="复制路径" placement="top">
-                    <button type="button" class="copy-icon" @click="copyCurrentPath">
-                      <el-icon><DocumentCopy /></el-icon>
-                    </button>
-                  </el-tooltip>
-                </div>
-              </template>
-              <template v-else-if="showShare">
-                <div class="path-pill">
-                  <span class="path-label">当前位置</span>
-                  <span class="path-value">文件分享</span>
-                </div>
-              </template>
-              <template v-else-if="showQuotaManage">
-                <div class="path-pill">
-                  <span class="path-label">当前位置</span>
-                  <span class="path-value">用户中心</span>
-                </div>
-              </template>
-              <template v-else>
-                <div class="breadcrumb">
-                  <el-breadcrumb separator="/">
-                    <el-breadcrumb-item>
-                      <button class="breadcrumb-link" type="button" @click="fetchFiles('/')">根目录</button>
-                    </el-breadcrumb-item>
-                    <el-breadcrumb-item v-for="crumb in breadcrumbItems" :key="crumb.path">
-                      <button class="breadcrumb-link" type="button" @click="fetchFiles(crumb.path)">
-                        {{ crumb.name }}
+                <template v-if="showRecycle">
+                  <div class="path-pill">
+                    <span class="path-label">当前位置</span>
+                    <span class="path-value">回收站</span>
+                    <el-tooltip content="复制路径" placement="top">
+                      <button type="button" class="copy-icon" @click="copyCurrentPath">
+                        <el-icon><DocumentCopy /></el-icon>
                       </button>
-                    </el-breadcrumb-item>
-                  </el-breadcrumb>
-                  <el-tooltip content="复制路径" placement="top">
-                    <button type="button" class="copy-icon" @click="copyCurrentPath">
-                      <el-icon><DocumentCopy /></el-icon>
-                    </button>
+                    </el-tooltip>
+                  </div>
+                </template>
+                <template v-else-if="showShare">
+                  <div class="path-pill">
+                    <span class="path-label">当前位置</span>
+                    <span class="path-value">{{ shareTab === 'link' ? '分享链接' : '定向分享' }}</span>
+                  </div>
+                </template>
+                <template v-else-if="showSharedWithMe">
+                  <template v-if="sharedActive">
+                    <div class="breadcrumb">
+                      <el-breadcrumb separator="/">
+                        <el-breadcrumb-item>
+                          <button class="breadcrumb-link" type="button" @click="setSharedPath('/')">
+                            {{ sharedActive.name }}
+                          </button>
+                        </el-breadcrumb-item>
+                        <el-breadcrumb-item v-for="crumb in sharedBreadcrumbItems" :key="crumb.path">
+                          <button class="breadcrumb-link" type="button" @click="setSharedPath(crumb.path)">
+                            {{ crumb.name }}
+                          </button>
+                        </el-breadcrumb-item>
+                      </el-breadcrumb>
+                      <el-tooltip content="复制路径" placement="top">
+                        <button type="button" class="copy-icon" @click="copyCurrentPath">
+                          <el-icon><DocumentCopy /></el-icon>
+                        </button>
+                      </el-tooltip>
+                    </div>
+                  </template>
+                  <template v-else>
+                    <div class="path-pill">
+                      <span class="path-label">当前位置</span>
+                      <span class="path-value">共享给我</span>
+                    </div>
+                  </template>
+                </template>
+                <template v-else>
+                  <div class="breadcrumb">
+                    <el-breadcrumb separator="/">
+                      <el-breadcrumb-item>
+                        <button class="breadcrumb-link" type="button" @click="fetchFiles('/')">根目录</button>
+                      </el-breadcrumb-item>
+                      <el-breadcrumb-item v-for="crumb in breadcrumbItems" :key="crumb.path">
+                        <button class="breadcrumb-link" type="button" @click="fetchFiles(crumb.path)">
+                          {{ crumb.name }}
+                        </button>
+                      </el-breadcrumb-item>
+                    </el-breadcrumb>
+                    <el-tooltip content="复制路径" placement="top">
+                      <button type="button" class="copy-icon" @click="copyCurrentPath">
+                        <el-icon><DocumentCopy /></el-icon>
+                      </button>
+                    </el-tooltip>
+                  </div>
+                </template>
+              </div>
+            </div>
+            <div class="list-header-right">
+              <div v-if="showSearch" class="header-search">
+                <el-input
+                  v-model="searchKeyword"
+                  clearable
+                  :placeholder="searchPlaceholder"
+                >
+                  <template #prefix>
+                    <el-icon><Search /></el-icon>
+                  </template>
+                </el-input>
+              </div>
+              <div class="list-actions">
+                <template v-if="showRecycle">
+                  <el-tooltip content="清空回收站" placement="top">
+                    <el-button type="danger" circle @click="clearRecycle" :loading="recycleLoading">
+                      <el-icon><Delete /></el-icon>
+                    </el-button>
+                  </el-tooltip>
+                  <el-tooltip content="刷新" placement="top">
+                    <el-button circle @click="refreshCurrentView" :loading="recycleLoading">
+                      <el-icon><Refresh /></el-icon>
+                    </el-button>
+                  </el-tooltip>
+                </template>
+                <template v-else-if="showShare">
+                  <el-tooltip content="刷新" placement="top">
+                    <el-button circle @click="refreshCurrentView" :loading="shareTab === 'link' ? shareLoading : directShareLoading">
+                      <el-icon><Refresh /></el-icon>
+                    </el-button>
+                  </el-tooltip>
+                </template>
+                <template v-else-if="showSharedWithMe">
+                  <template v-if="sharedActive">
+                    <el-tooltip v-if="sharedCanCreate" content="新建文件夹" placement="top">
+                      <el-button circle type="primary" :icon="FolderAdd" @click="createFolder" />
+                    </el-tooltip>
+                    <el-tooltip v-if="sharedCanCreate" content="上传文件" placement="top">
+                      <el-button circle type="primary" :icon="Upload" @click="triggerUpload" />
+                    </el-tooltip>
+                    <el-tooltip v-if="sharedCanCreate" content="上传目录" placement="top">
+                      <el-button circle type="primary" :icon="FolderOpened" @click="triggerDirectoryUpload" />
+                    </el-tooltip>
+                    <el-tooltip content="刷新" placement="top">
+                      <el-button circle @click="refreshCurrentView" :loading="sharedEntriesLoading">
+                        <el-icon><Refresh /></el-icon>
+                      </el-button>
+                    </el-tooltip>
+                    <input
+                      ref="fileInput"
+                      type="file"
+                      multiple
+                      style="display:none"
+                      @change="handleFileSelect"
+                    />
+                    <input
+                      ref="directoryInput"
+                      type="file"
+                      webkitdirectory
+                      directory
+                      multiple
+                      style="display:none"
+                      @change="handleFileSelect"
+                    />
+                  </template>
+                  <template v-else>
+                    <el-tooltip content="刷新" placement="top">
+                      <el-button circle @click="refreshCurrentView" :loading="sharedWithMeLoading">
+                        <el-icon><Refresh /></el-icon>
+                      </el-button>
+                    </el-tooltip>
+                  </template>
+                </template>
+                <template v-else>
+                  <el-tooltip content="新建文件夹" placement="top">
+                    <el-button circle type="primary" :icon="FolderAdd" @click="createFolder" />
+                  </el-tooltip>
+                  <el-tooltip content="上传文件" placement="top">
+                    <el-button circle type="primary" :icon="Upload" @click="triggerUpload" />
+                  </el-tooltip>
+                  <el-tooltip content="上传目录" placement="top">
+                    <el-button circle type="primary" :icon="FolderOpened" @click="triggerDirectoryUpload" />
+                  </el-tooltip>
+                  <el-tooltip content="刷新" placement="top">
+                    <el-button circle @click="refreshCurrentView" :loading="loading">
+                      <el-icon><Refresh /></el-icon>
+                    </el-button>
+                  </el-tooltip>
+                  <input
+                    ref="fileInput"
+                    type="file"
+                    multiple
+                    style="display:none"
+                    @change="handleFileSelect"
+                  />
+                  <input
+                    ref="directoryInput"
+                    type="file"
+                    webkitdirectory
+                    directory
+                    multiple
+                    style="display:none"
+                    @change="handleFileSelect"
+                  />
+                </template>
+              </div>
+            </div>
+          </div>
+          <div v-if="showQuotaManage" class="content-body content-scroll" v-loading="quotaManageLoading">
+            <div class="user-center">
+              <div class="user-card">
+                <div class="card-head">
+                  <div class="card-title">基础信息</div>
+                  <el-tooltip content="刷新" placement="top">
+                    <el-button circle size="small" :icon="Refresh" @click="refreshCurrentView" :loading="quotaManageLoading" />
                   </el-tooltip>
                 </div>
-              </template>
-            </div>
-          </div>
-          <div class="header-actions">
-            <template v-if="showRecycle">
-              <el-button @click="refreshCurrentView" :loading="recycleLoading">
-                <el-icon><Refresh /></el-icon> 刷新
-              </el-button>
-            </template>
-            <template v-else-if="showShare">
-              <el-button @click="refreshCurrentView" :loading="shareLoading">
-                <el-icon><Refresh /></el-icon> 刷新
-              </el-button>
-            </template>
-            <template v-else-if="showQuotaManage">
-              <el-button @click="refreshCurrentView" :loading="quotaManageLoading">
-                <el-icon><Refresh /></el-icon> 刷新
-              </el-button>
-            </template>
-            <template v-else>
-              <el-button @click="createFolder">
-                <span class="iconfont icon-tianjia"></span> 新建文件夹
-              </el-button>
-              <el-button type="primary" @click="triggerUpload">
-                <span class="iconfont icon-shangchuan"></span> 上传文件
-              </el-button>
-              <el-button @click="refreshCurrentView" :loading="loading">
-                <el-icon><Refresh /></el-icon> 刷新
-              </el-button>
-              <input
-                ref="fileInput"
-                type="file"
-                style="display:none"
-                @change="handleFileSelect"
-              />
-            </template>
-          </div>
-        </header>
-
-        <section class="content-card">
-          <div v-if="showQuotaManage" class="user-center" v-loading="quotaManageLoading">
-            <div class="user-card">
-              <div class="card-title">基础信息</div>
-              <div class="user-list">
-                <div class="user-row">
-                  <span class="user-label">用户名</span>
-                  <span class="user-value">{{ userProfile.username }}</span>
-                </div>
-                <div class="user-row">
-                  <span class="user-label">钱包地址</span>
-                  <span class="user-value mono">{{ userProfile.walletAddress }}</span>
-                </div>
-                <div class="user-row">
-                  <span class="user-label">钱包类型</span>
-                  <span class="user-value">{{ userProfile.walletName }}</span>
-                </div>
-                <div class="user-row">
-                  <span class="user-label">权限</span>
-                  <span class="user-value">
-                    <span v-if="!userProfile.permissions.length">-</span>
-                    <span v-else class="user-tags">
-                      <el-tag v-for="permission in userProfile.permissions" :key="permission" size="small" type="info">
-                        {{ permission }}
-                      </el-tag>
+                <div class="user-list">
+                  <div class="user-row">
+                    <span class="user-label">用户名</span>
+                    <div class="user-value user-inline">
+                      <span v-if="!editingUsername" class="user-text">{{ userProfile.username }}</span>
+                      <el-input
+                        v-else
+                        v-model="usernameDraft"
+                        size="small"
+                        class="user-input"
+                        placeholder="请输入新用户名"
+                      />
+                      <div class="user-actions">
+                        <el-button
+                          v-if="!editingUsername"
+                          size="small"
+                          text
+                          @click="startEditUsername"
+                        >
+                          修改
+                        </el-button>
+                        <template v-else>
+                          <el-button
+                            size="small"
+                            type="primary"
+                            :loading="usernameSaving"
+                            @click="submitUsername"
+                          >
+                            保存
+                          </el-button>
+                          <el-button size="small" @click="cancelEditUsername">取消</el-button>
+                        </template>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="user-row">
+                    <span class="user-label">钱包地址</span>
+                    <span class="user-value mono">{{ userProfile.walletAddress }}</span>
+                  </div>
+                  <div class="user-row">
+                    <span class="user-label">钱包类型</span>
+                    <span class="user-value">{{ userProfile.walletName }}</span>
+                  </div>
+                  <div class="user-row">
+                    <span class="user-label">权限</span>
+                    <span class="user-value">
+                      <span v-if="!userProfile.permissions.length">-</span>
+                      <span v-else class="user-tags">
+                        <el-tag v-for="permission in userProfile.permissions" :key="permission" size="small" type="info">
+                          {{ permission }}
+                        </el-tag>
+                      </span>
                     </span>
-                  </span>
-                </div>
-                <div class="user-row">
-                  <span class="user-label">注册时间</span>
-                  <span class="user-value">
-                    {{ userProfile.createdAt ? formatTime(userProfile.createdAt) : '-' }}
-                  </span>
+                  </div>
+                  <div class="user-row">
+                    <span class="user-label">注册时间</span>
+                    <span class="user-value">
+                      {{ userProfile.createdAt ? formatTime(userProfile.createdAt) : '-' }}
+                    </span>
+                  </div>
+                  <div class="user-row">
+                    <span class="user-label">登录密码</span>
+                    <div class="user-value user-inline">
+                      <span class="user-text">{{ userProfile.hasPassword ? '已设置' : '未设置' }}</span>
+                      <div class="user-actions">
+                        <el-button size="small" text @click="openPasswordDialog">
+                          {{ userProfile.hasPassword ? '修改' : '设置' }}
+                        </el-button>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
-            </div>
-            <div class="user-card">
-              <div class="card-title">当前额度</div>
-              <div class="quota-value">
-                <span>{{ formatSize(quota.used) }}</span>
-                <span class="quota-sep">/</span>
-                <span>{{ quota.unlimited ? '无限' : formatSize(quota.quota) }}</span>
-              </div>
-              <el-progress
-                v-if="!quota.unlimited"
-                :percentage="Math.min(Number(quota.percentage.toFixed(2)), 100)"
-                :stroke-width="8"
-              />
-              <div class="quota-meta">
-                <span v-if="quota.unlimited">未设置上限</span>
-                <span v-else>已使用 {{ quota.percentage.toFixed(2) }}%</span>
-              </div>
-              <div class="quota-grid">
-                <div class="quota-item">
-                  <span class="quota-label">已使用</span>
-                  <span class="quota-amount">{{ formatSize(quota.used) }}</span>
+              <div class="user-card">
+                <div class="card-title">当前额度</div>
+                <div class="quota-value">
+                  <span>{{ formatSize(quota.used) }}</span>
+                  <span class="quota-sep">/</span>
+                  <span>{{ quota.unlimited ? '无限' : formatSize(quota.quota) }}</span>
                 </div>
-                <div class="quota-item">
-                  <span class="quota-label">可用</span>
-                  <span class="quota-amount">
-                    {{ quota.unlimited ? '无限' : formatSize(quotaAvailable ?? 0) }}
-                  </span>
+                <el-progress
+                  v-if="!quota.unlimited"
+                  :percentage="Math.min(Number(quota.percentage.toFixed(2)), 100)"
+                  :stroke-width="8"
+                />
+                <div class="quota-meta">
+                  <span v-if="quota.unlimited">未设置上限</span>
+                  <span v-else>已使用 {{ quota.percentage.toFixed(2) }}%</span>
                 </div>
-                <div class="quota-item">
-                  <span class="quota-label">总额度</span>
-                  <span class="quota-amount">{{ quota.unlimited ? '无限' : formatSize(quota.quota) }}</span>
-                </div>
-                <div class="quota-item">
-                  <span class="quota-label">使用率</span>
-                  <span class="quota-amount">{{ quota.unlimited ? '-' : `${quota.percentage.toFixed(2)}%` }}</span>
+                <div class="quota-grid">
+                  <div class="quota-item">
+                    <span class="quota-label">已使用</span>
+                    <span class="quota-amount">{{ formatSize(quota.used) }}</span>
+                  </div>
+                  <div class="quota-item">
+                    <span class="quota-label">可用</span>
+                    <span class="quota-amount">
+                      {{ quota.unlimited ? '无限' : formatSize(quotaAvailable ?? 0) }}
+                    </span>
+                  </div>
+                  <div class="quota-item">
+                    <span class="quota-label">总额度</span>
+                    <span class="quota-amount">{{ quota.unlimited ? '无限' : formatSize(quota.quota) }}</span>
+                  </div>
+                  <div class="quota-item">
+                    <span class="quota-label">使用率</span>
+                    <span class="quota-amount">{{ quota.unlimited ? '-' : `${quota.percentage.toFixed(2)}%` }}</span>
+                  </div>
                 </div>
               </div>
             </div>
           </div>
-          <el-table
-            v-else
-            :data="displayList"
-            v-loading="showRecycle ? recycleLoading : (showShare ? shareLoading : loading)"
-            style="width: 100%"
-            @row-click="handleRowClick"
-          >
-            <!-- 回收站模式 -->
-            <template v-if="showRecycle">
-              <el-table-column label="目录" width="120">
-                <template #default="{ row }">
-                  <el-tag size="small">{{ row.directory }}</el-tag>
-                </template>
-              </el-table-column>
-              <el-table-column label="名称" min-width="200">
-                <template #default="{ row }">
-                  <div class="file-name">
-                    <span class="iconfont icon-wenjian1"></span>
-                    <span class="name">{{ row.name }}</span>
-                  </div>
-                </template>
-              </el-table-column>
-              <el-table-column label="原始路径" min-width="180">
-                <template #default="{ row }">
-                  {{ row.path }}
-                </template>
-              </el-table-column>
-              <el-table-column label="大小" width="80">
-                <template #default="{ row }">
-                  {{ formatSize(row.size) }}
-                </template>
-              </el-table-column>
-              <el-table-column label="删除时间" width="150">
-                <template #default="{ row }">
-                  {{ formatDeletedTime(row.deletedAt) }}
-                </template>
-              </el-table-column>
-              <el-table-column label="操作" width="140" fixed="right">
-                <template #default="{ row }">
-                  <div class="actions">
-                    <el-tooltip content="恢复" placement="top">
-                      <el-button type="primary" link @click="recoverFile(row)">
-                        <el-icon><FolderOpened /></el-icon>
-                      </el-button>
-                    </el-tooltip>
-                    <el-tooltip content="永久删除" placement="top">
-                      <el-button type="danger" link @click="permanentlyDelete(row)">
-                        <el-icon><Delete /></el-icon>
-                      </el-button>
-                    </el-tooltip>
-                  </div>
-                </template>
-              </el-table-column>
-            </template>
-            <template v-else-if="showShare">
-              <el-table-column label="名称" min-width="200">
-                <template #default="{ row }">
-                  <div class="file-name">
-                    <span class="iconfont icon-wenjian1"></span>
-                    <span class="name">{{ row.name }}</span>
-                  </div>
-                </template>
-              </el-table-column>
-              <el-table-column label="路径" min-width="180">
-                <template #default="{ row }">
-                  {{ row.path }}
-                </template>
-              </el-table-column>
-              <el-table-column label="访问/下载" width="110">
-                <template #default="{ row }">
-                  {{ row.viewCount ?? 0 }}/{{ row.downloadCount ?? 0 }}
-                </template>
-              </el-table-column>
-              <el-table-column label="过期时间" width="160">
-                <template #default="{ row }">
-                  {{ row.expiresAt ? formatTime(row.expiresAt) : '-' }}
-                </template>
-              </el-table-column>
-              <el-table-column label="创建时间" width="160">
-                <template #default="{ row }">
-                  {{ row.createdAt ? formatTime(row.createdAt) : '-' }}
-                </template>
-              </el-table-column>
-              <el-table-column label="操作" width="120" fixed="right">
-                <template #default="{ row }">
-                  <div class="actions">
-                    <el-tooltip content="复制链接" placement="top">
-                      <el-button link :icon="DocumentCopy" @click="copyShareLink(row)" />
-                    </el-tooltip>
-                    <el-tooltip content="取消分享" placement="top">
-                      <el-button type="danger" link :icon="Delete" @click="revokeShare(row)" />
-                    </el-tooltip>
-                  </div>
-                </template>
-              </el-table-column>
-            </template>
-            <!-- 文件列表模式 -->
-            <template v-else>
-              <el-table-column label="名称" min-width="280">
-                <template #default="{ row }">
-                  <div class="file-name">
-                    <span class="iconfont" :class="row.isDir ? 'icon-wenjianjia' : 'icon-wenjian1'"></span>
-                    <span class="name">{{ row.name }}</span>
-                  </div>
-                </template>
-              </el-table-column>
-              <el-table-column label="大小" width="100">
-                <template #default="{ row }">
-                  {{ row.isDir ? '-' : formatSize(row.size) }}
-                </template>
-              </el-table-column>
-              <el-table-column label="修改时间" width="160">
-                <template #default="{ row }">
-                  {{ formatTime(row.modified) }}
-                </template>
-              </el-table-column>
-              <el-table-column label="操作" width="180" fixed="right">
-                <template #default="{ row }">
-                  <div class="actions" @click.stop>
-                    <el-tooltip v-if="!row.isDir" content="下载" placement="top">
-                      <el-button type="primary" link :icon="Download" @click="downloadFile(row)" />
-                    </el-tooltip>
-                    <el-tooltip v-if="!row.isDir" content="分享" placement="top">
-                      <el-button type="primary" link :icon="Share" @click="shareFile(row)" />
-                    </el-tooltip>
-                    <el-tooltip content="重命名" placement="top">
-                      <el-button type="primary" link :icon="Edit" @click="renameItem(row)" />
-                    </el-tooltip>
-                    <el-tooltip content="删除" placement="top">
-                      <el-button type="danger" link :icon="Delete" @click="deleteFile(row)" />
-                    </el-tooltip>
-                  </div>
-                </template>
-              </el-table-column>
-            </template>
-          </el-table>
+          <div v-else-if="showAddressBook" class="content-body content-scroll" v-loading="addressBookLoading">
+            <AddressBookView />
+          </div>
+          <div v-else class="content-body table-wrapper">
+            <RecycleTableView
+              v-if="showRecycle"
+              :rows="filteredRecycleList"
+              :loading="recycleLoading"
+              :on-row-click="handleRowClick"
+              :format-recycle-full-path="formatRecycleFullPath"
+              :format-recycle-location="formatRecycleLocation"
+              :format-size="formatSize"
+              :format-deleted-time="formatDeletedTime"
+              :recover-file="recoverFile"
+              :permanently-delete="permanentlyDelete"
+            />
+            <ShareTableView
+              v-else-if="showShare"
+              :share-tab="shareTab"
+              :share-list="filteredShareList"
+              :direct-share-list="filteredDirectShareList"
+              :loading="shareTab === 'link' ? shareLoading : directShareLoading"
+              :on-row-click="handleRowClick"
+              :copy-share-link="copyShareLink"
+              :revoke-share="revokeShare"
+              :revoke-direct-share="revokeDirectShare"
+              :format-time="formatTime"
+              :shorten-address="shortenAddress"
+            />
+            <SharedWithMeTableView
+              v-else-if="showSharedWithMe"
+              :shared-active="sharedActive"
+              :shared-with-me-list="filteredSharedWithMeList"
+              :shared-entries="filteredSharedEntries"
+              :loading="sharedActive ? sharedEntriesLoading : sharedWithMeLoading"
+              :on-row-click="handleRowClick"
+              :format-time="formatTime"
+              :format-size="formatSize"
+              :shorten-address="shortenAddress"
+              :shared-can-read="sharedCanRead"
+              :shared-can-update="sharedCanUpdate"
+              :shared-can-delete="sharedCanDelete"
+              :open-share-detail="openShareDetail"
+              :download-shared-root="downloadSharedRoot"
+              :open-shared-entry-detail="openSharedEntryDetail"
+              :download-shared-file="downloadSharedFile"
+              :rename-shared-item="renameSharedItem"
+              :delete-shared-item="deleteSharedItem"
+            />
+            <FileTableView
+              v-else
+              :rows="filteredFileList"
+              :loading="loading"
+              :on-row-click="handleRowClick"
+              :format-size="formatSize"
+              :format-time="formatTime"
+              :open-detail-drawer="openDetailDrawer"
+              :download-file="downloadFile"
+              :share-file="shareFile"
+              :open-share-user-dialog="openShareUserDialog"
+              :rename-item="renameItem"
+              :delete-file="deleteFile"
+            />
+          </div>
         </section>
 
         <!-- 上传进度 -->
@@ -985,13 +2425,61 @@ onMounted(() => {
           {{ uploadProgress }}
         </div>
       </main>
+
+      <HomeOverlays
+        v-model:detail-drawer-visible="detailDrawerVisible"
+        :detail-title="detailTitle"
+        :detail-mode="detailMode"
+        :detail-file="detailFile"
+        :detail-recycle="detailRecycle"
+        :detail-share="detailShare"
+        :detail-direct-share="detailDirectShare"
+        :detail-received-share="detailReceivedShare"
+        :detail-shared-entry="detailSharedEntry"
+        :shared-can-read="sharedCanRead"
+        :format-time="formatTime"
+        :format-deleted-time="formatDeletedTime"
+        :format-size-detail="formatSizeDetail"
+        :format-share-permission="formatSharePermission"
+        :get-share-link="getShareLink"
+        :copy-share-link="copyShareLink"
+        :revoke-share="revokeShare"
+        :revoke-direct-share="revokeDirectShare"
+        :enter-directory="enterDirectory"
+        :enter-shared-root="enterSharedRoot"
+        :enter-shared-directory="enterSharedDirectory"
+        :download-shared-root="downloadSharedRoot"
+        :download-shared-file="downloadSharedFile"
+        v-model:share-user-dialog-visible="shareUserDialogVisible"
+        :share-user-submitting="shareUserSubmitting"
+        :share-user-target="shareUserTarget"
+        :share-user-form="shareUserForm"
+        :address-groups="addressGroups"
+        :grouped-contacts="groupedContacts"
+        :submit-share-user="submitShareUser"
+        v-model:create-folder-dialog-visible="createFolderDialogVisible"
+        :create-folder-submitting="createFolderSubmitting"
+        :create-folder-form="createFolderForm"
+        :submit-create-folder="submitCreateFolder"
+        v-model:rename-dialog-visible="renameDialogVisible"
+        :rename-submitting="renameSubmitting"
+        :rename-form="renameForm"
+        :rename-target="renameTarget"
+        :submit-rename="submitRename"
+        v-model:password-dialog-visible="passwordDialogVisible"
+        :password-submitting="passwordSubmitting"
+        :password-form="passwordForm"
+        :user-profile="userProfile"
+        :submit-password="submitPassword"
+      />
     </div>
   </div>
 </template>
 
 <style lang="scss" scoped>
 .home-container {
-  min-height: 100%;
+  height: 100%;
+  overflow: hidden;
   background: linear-gradient(180deg, #f6f8fb 0%, #f2f4f7 100%);
 }
 
@@ -999,28 +2487,20 @@ onMounted(() => {
   display: flex;
   justify-content: center;
   align-items: center;
-  min-height: 100vh;
+  height: 100%;
+  flex-direction: column;
+  gap: 8px;
+  color: #606266;
+  font-size: 16px;
+}
 
-  .login-box {
-    text-align: center;
-    padding: 40px;
-    border-radius: 16px;
-    background: #fff;
-    box-shadow: 0 12px 28px rgba(15, 23, 42, 0.12);
+.login-hint {
+  font-weight: 500;
+}
 
-    h1 {
-      margin-bottom: 16px;
-    }
-
-    p {
-      margin-bottom: 24px;
-      color: #666;
-    }
-
-    .warning {
-      color: #e6a23c;
-    }
-  }
+.login-warning {
+  color: #e6a23c;
+  font-size: 14px;
 }
 
 .app-shell {
@@ -1030,6 +2510,7 @@ onMounted(() => {
   padding: 16px;
   height: 100%;
   box-sizing: border-box;
+  min-height: 0;
 }
 
 .side-panel {
@@ -1041,6 +2522,8 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  min-height: 0;
+  overflow: auto;
 }
 
 .brand {
@@ -1139,31 +2622,7 @@ onMounted(() => {
   flex-direction: column;
   gap: 16px;
   min-width: 0;
-}
-
-.page-header {
-  background: #fff;
-  border-radius: 16px;
-  padding: 16px;
-  border: 1px solid #eef1f4;
-  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  flex-wrap: wrap;
-}
-
-.header-left {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.view-title {
-  font-size: 18px;
-  font-weight: 600;
-  color: #1f2d3d;
+  min-height: 0;
 }
 
 .path-row {
@@ -1225,30 +2684,57 @@ onMounted(() => {
   transition: all 0.2s ease;
 }
 
-.share-link {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.share-text {
-  max-width: 220px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: #606266;
-}
-
 .copy-icon:hover {
   background: rgba(64, 158, 255, 0.12);
   color: #409eff;
 }
 
-.header-actions {
+.header-search {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+}
+
+.header-search :deep(.el-input) {
+  width: 420px;
+  max-width: 100%;
+}
+
+.list-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 4px 0 12px;
+  border-bottom: 1px solid #eef1f4;
+}
+
+.list-header-left {
+  flex: 1;
+  min-width: 0;
+}
+
+.list-header-right {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+
+.list-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }
 
 .content-card {
@@ -1257,34 +2743,49 @@ onMounted(() => {
   border: 1px solid #eef1f4;
   box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
   padding: 8px 8px 12px;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
 }
 
-.file-name {
+.content-body {
+  flex: 1;
+  min-height: 0;
+}
+
+.content-scroll {
+  overflow: auto;
+}
+
+.table-wrapper {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.drop-mask {
+  position: absolute;
+  inset: 8px;
+  border-radius: 12px;
+  border: 2px dashed #409eff;
+  background: rgba(64, 158, 255, 0.08);
   display: flex;
   align-items: center;
-  gap: 8px;
-  cursor: pointer;
-
-  .iconfont {
-    font-size: 20px;
-  }
-
-  .icon-wenjianjia {
-    color: #e6a23c;
-  }
-
-  .icon-wenjian1 {
-    color: #409eff;
-  }
+  justify-content: center;
+  z-index: 6;
+  pointer-events: none;
 }
 
-.actions {
-  display: flex;
-  gap: 8px;
-}
-
-.actions .el-button {
-  padding: 0 4px;
+.drop-hint {
+  padding: 10px 16px;
+  border-radius: 999px;
+  background: #fff;
+  color: #1f2d3d;
+  font-size: 14px;
+  box-shadow: 0 8px 16px rgba(15, 23, 42, 0.08);
 }
 
 .upload-tip {
@@ -1343,6 +2844,31 @@ onMounted(() => {
   font-size: 13px;
   color: #1f2d3d;
   word-break: break-all;
+}
+
+.user-inline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.user-text {
+  flex: 1;
+  min-width: 0;
+  word-break: break-all;
+}
+
+.user-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.user-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
 }
 
 .user-tags {
@@ -1433,10 +2959,6 @@ onMounted(() => {
 
   .nav-item {
     width: auto;
-  }
-
-  .page-header {
-    padding: 12px;
   }
 }
 </style>

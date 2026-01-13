@@ -13,16 +13,18 @@ import (
 
 // Router HTTP 路由器
 type Router struct {
-	config         *config.Config
-	authenticators []auth.Authenticator
-	healthHandler  *handler.HealthHandler
-	web3Handler    *handler.Web3Handler
-	webdavHandler  *handler.WebDAVHandler
-	quotaHandler   *handler.QuotaHandler
-	userHandler    *handler.UserHandler
-	recycleHandler *handler.RecycleHandler
-	shareHandler   *handler.ShareHandler
-	logger         *zap.Logger
+	config             *config.Config
+	authenticators     []auth.Authenticator
+	healthHandler      *handler.HealthHandler
+	web3Handler        *handler.Web3Handler
+	webdavHandler      *handler.WebDAVHandler
+	quotaHandler       *handler.QuotaHandler
+	userHandler        *handler.UserHandler
+	recycleHandler     *handler.RecycleHandler
+	shareHandler       *handler.ShareHandler
+	shareUserHandler   *handler.ShareUserHandler
+	addressBookHandler *handler.AddressBookHandler
+	logger             *zap.Logger
 }
 
 // NewRouter 创建路由器
@@ -36,19 +38,23 @@ func NewRouter(
 	userHandler *handler.UserHandler,
 	recycleHandler *handler.RecycleHandler,
 	shareHandler *handler.ShareHandler,
+	shareUserHandler *handler.ShareUserHandler,
+	addressBookHandler *handler.AddressBookHandler,
 	logger *zap.Logger,
 ) *Router {
 	return &Router{
-		config:         cfg,
-		authenticators: authenticators,
-		healthHandler:  healthHandler,
-		web3Handler:    web3Handler,
-		webdavHandler:  webdavHandler,
-		quotaHandler:   quotaHandler,
-		userHandler:    userHandler,
-		recycleHandler: recycleHandler,
-		shareHandler:   shareHandler,
-		logger:         logger,
+		config:             cfg,
+		authenticators:     authenticators,
+		healthHandler:      healthHandler,
+		web3Handler:        web3Handler,
+		webdavHandler:      webdavHandler,
+		quotaHandler:       quotaHandler,
+		userHandler:        userHandler,
+		recycleHandler:     recycleHandler,
+		shareHandler:       shareHandler,
+		shareUserHandler:   shareUserHandler,
+		addressBookHandler: addressBookHandler,
+		logger:             logger,
 	}
 }
 
@@ -62,22 +68,55 @@ func (r *Router) Setup() http.Handler {
 	// Web3 认证路由（无需认证）
 	mux.HandleFunc("/api/v1/public/common/auth/challenge", r.web3Handler.HandleChallenge)
 	mux.HandleFunc("/api/v1/public/common/auth/verify", r.web3Handler.HandleVerify)
-	mux.HandleFunc("/api/v1/public/common/auth/refreshToken", r.web3Handler.HandleRefresh)
+	mux.HandleFunc("/api/v1/public/common/auth/refresh", r.web3Handler.HandleRefresh)
+	mux.HandleFunc("/api/v1/public/common/auth/logout", r.web3Handler.HandleLogout)
+
+	// SDK 认证路由（无需认证）
+	mux.HandleFunc("/api/v1/public/auth/challenge", r.web3Handler.HandleChallenge)
+	mux.HandleFunc("/api/v1/public/auth/verify", r.web3Handler.HandleVerify)
+	mux.HandleFunc("/api/v1/public/auth/refresh", r.web3Handler.HandleRefresh)
+	mux.HandleFunc("/api/v1/public/auth/logout", r.web3Handler.HandleLogout)
+	mux.HandleFunc("/api/v1/public/auth/password/login", r.web3Handler.HandlePasswordLogin)
 
 	// API 路由（需要认证）
 	mux.Handle("/api/v1/public/webdav/quota", r.createAuthenticatedHandler(http.HandlerFunc(r.quotaHandler.GetUserQuota)))
 	mux.Handle("/api/v1/public/webdav/user/info", r.createAuthenticatedHandler(http.HandlerFunc(r.userHandler.GetUserInfo)))
+	mux.Handle("/api/v1/public/webdav/user/update", r.createAuthenticatedHandler(http.HandlerFunc(r.userHandler.UpdateUsername)))
+	mux.Handle("/api/v1/public/webdav/user/password", r.createAuthenticatedHandler(http.HandlerFunc(r.userHandler.UpdatePassword)))
 
 	// 回收站路由
 	mux.Handle("/api/v1/public/webdav/recycle/list", r.createAuthenticatedHandler(http.HandlerFunc(r.recycleHandler.HandleList)))
 	mux.Handle("/api/v1/public/webdav/recycle/recover", r.createAuthenticatedHandler(http.HandlerFunc(r.recycleHandler.HandleRecover)))
 	mux.Handle("/api/v1/public/webdav/recycle/permanent", r.createAuthenticatedHandler(http.HandlerFunc(r.recycleHandler.HandleRemove)))
+	mux.Handle("/api/v1/public/webdav/recycle/clear", r.createAuthenticatedHandler(http.HandlerFunc(r.recycleHandler.HandleClear)))
+
+	// 好友地址簿
+	mux.Handle("/api/v1/public/webdav/address/groups", r.createAuthenticatedHandler(http.HandlerFunc(r.addressBookHandler.HandleGroupList)))
+	mux.Handle("/api/v1/public/webdav/address/groups/create", r.createAuthenticatedHandler(http.HandlerFunc(r.addressBookHandler.HandleGroupCreate)))
+	mux.Handle("/api/v1/public/webdav/address/groups/update", r.createAuthenticatedHandler(http.HandlerFunc(r.addressBookHandler.HandleGroupUpdate)))
+	mux.Handle("/api/v1/public/webdav/address/groups/delete", r.createAuthenticatedHandler(http.HandlerFunc(r.addressBookHandler.HandleGroupDelete)))
+	mux.Handle("/api/v1/public/webdav/address/contacts", r.createAuthenticatedHandler(http.HandlerFunc(r.addressBookHandler.HandleContactList)))
+	mux.Handle("/api/v1/public/webdav/address/contacts/create", r.createAuthenticatedHandler(http.HandlerFunc(r.addressBookHandler.HandleContactCreate)))
+	mux.Handle("/api/v1/public/webdav/address/contacts/update", r.createAuthenticatedHandler(http.HandlerFunc(r.addressBookHandler.HandleContactUpdate)))
+	mux.Handle("/api/v1/public/webdav/address/contacts/delete", r.createAuthenticatedHandler(http.HandlerFunc(r.addressBookHandler.HandleContactDelete)))
 
 	// 分享路由
 	mux.Handle("/api/v1/public/share/create", r.createAuthenticatedHandler(http.HandlerFunc(r.shareHandler.HandleCreate)))
 	mux.Handle("/api/v1/public/share/list", r.createAuthenticatedHandler(http.HandlerFunc(r.shareHandler.HandleList)))
 	mux.Handle("/api/v1/public/share/revoke", r.createAuthenticatedHandler(http.HandlerFunc(r.shareHandler.HandleRevoke)))
 	mux.HandleFunc("/api/v1/public/share/", r.shareHandler.HandleAccess)
+
+	// 定向分享路由（需要认证）
+	mux.Handle("/api/v1/public/share/user/create", r.createAuthenticatedHandler(http.HandlerFunc(r.shareUserHandler.HandleCreate)))
+	mux.Handle("/api/v1/public/share/user/list", r.createAuthenticatedHandler(http.HandlerFunc(r.shareUserHandler.HandleListMine)))
+	mux.Handle("/api/v1/public/share/user/received", r.createAuthenticatedHandler(http.HandlerFunc(r.shareUserHandler.HandleListReceived)))
+	mux.Handle("/api/v1/public/share/user/revoke", r.createAuthenticatedHandler(http.HandlerFunc(r.shareUserHandler.HandleRevoke)))
+	mux.Handle("/api/v1/public/share/user/entries", r.createAuthenticatedHandler(http.HandlerFunc(r.shareUserHandler.HandleEntries)))
+	mux.Handle("/api/v1/public/share/user/download", r.createAuthenticatedHandler(http.HandlerFunc(r.shareUserHandler.HandleDownload)))
+	mux.Handle("/api/v1/public/share/user/upload", r.createAuthenticatedHandler(http.HandlerFunc(r.shareUserHandler.HandleUpload)))
+	mux.Handle("/api/v1/public/share/user/folder", r.createAuthenticatedHandler(http.HandlerFunc(r.shareUserHandler.HandleCreateFolder)))
+	mux.Handle("/api/v1/public/share/user/rename", r.createAuthenticatedHandler(http.HandlerFunc(r.shareUserHandler.HandleRename)))
+	mux.Handle("/api/v1/public/share/user/item", r.createAuthenticatedHandler(http.HandlerFunc(r.shareUserHandler.HandleDelete)))
 
 	// WebDAV 路由（需要认证）
 	webdavPrefix := r.normalizePrefix(r.config.WebDAV.Prefix)

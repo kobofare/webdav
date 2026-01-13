@@ -17,9 +17,15 @@ type JWTManager struct {
 	issuer     string
 }
 
+const (
+	TokenTypeAccess  = "access"
+	TokenTypeRefresh = "refresh"
+)
+
 // Claims JWT 声明
 type Claims struct {
-	Address string `json:"address"`
+	Address   string `json:"address"`
+	TokenType string `json:"token_type,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -34,11 +40,20 @@ func NewJWTManager(secret string, expiration time.Duration) *JWTManager {
 
 // Generate 生成 JWT
 func (m *JWTManager) Generate(address string) (*auth.Token, error) {
+	return m.generate(address, TokenTypeAccess, m.expiration)
+}
+
+func (m *JWTManager) GenerateRefresh(address string, expiration time.Duration) (*auth.Token, error) {
+	return m.generate(address, TokenTypeRefresh, expiration)
+}
+
+func (m *JWTManager) generate(address, tokenType string, expiration time.Duration) (*auth.Token, error) {
 	now := time.Now()
-	expiresAt := now.Add(m.expiration)
+	expiresAt := now.Add(expiration)
 
 	claims := Claims{
-		Address: strings.ToLower(address),
+		Address:   strings.ToLower(address),
+		TokenType: tokenType,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(expiresAt),
 			IssuedAt:  jwt.NewNumericDate(now),
@@ -64,6 +79,14 @@ func (m *JWTManager) Generate(address string) (*auth.Token, error) {
 
 // Verify 验证 JWT
 func (m *JWTManager) Verify(tokenString string) (string, error) {
+	return m.verify(tokenString, TokenTypeAccess, true)
+}
+
+func (m *JWTManager) VerifyRefresh(tokenString string) (string, error) {
+	return m.verify(tokenString, TokenTypeRefresh, false)
+}
+
+func (m *JWTManager) verify(tokenString, expectedType string, allowEmptyType bool) (string, error) {
 	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
 		// 验证签名方法
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
@@ -80,6 +103,12 @@ func (m *JWTManager) Verify(tokenString string) (string, error) {
 	}
 
 	if claims, ok := token.Claims.(*Claims); ok && token.Valid {
+		if claims.TokenType == "" && allowEmptyType {
+			return claims.Address, nil
+		}
+		if claims.TokenType != expectedType {
+			return "", auth.ErrInvalidToken
+		}
 		return claims.Address, nil
 	}
 

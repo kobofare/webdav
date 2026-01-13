@@ -2,18 +2,19 @@ package handler
 
 import (
 	"encoding/json"
-	"net/http"
-	"strings"
-	"time"
-	"strconv"
+	"fmt"
 	"github.com/yeying-community/webdav/internal/domain/user"
 	"github.com/yeying-community/webdav/internal/infrastructure/auth"
+	"github.com/yeying-community/webdav/internal/infrastructure/crypto"
 	"github.com/yeying-community/webdav/internal/interface/http/dto"
 	"go.uber.org/zap"
+	"golang.org/x/crypto/sha3"
+	"math/rand"
+	"net/http"
 	"regexp"
-    "golang.org/x/crypto/sha3"
-    "math/rand"
-	"fmt"
+	"strconv"
+	"strings"
+	"time"
 )
 
 // Web3Handler Web3 认证处理器
@@ -21,6 +22,15 @@ type Web3Handler struct {
 	web3Auth *auth.Web3Authenticator
 	userRepo user.Repository
 	logger   *zap.Logger
+}
+
+const refreshTokenCookieName = "refresh_token"
+
+type sdkResponse struct {
+	Code      int         `json:"code"`
+	Message   string      `json:"message"`
+	Data      interface{} `json:"data"`
+	Timestamp int64       `json:"timestamp"`
 }
 
 // NewWeb3Handler 创建 Web3 处理器
@@ -37,10 +47,10 @@ func NewWeb3Handler(
 }
 
 type AddressInfo struct {
-    CoinBalance string `json:"coin_balance"`
+	CoinBalance string `json:"coin_balance"`
 }
 
-// 获取以太坊钱包的账户余额是否大于0 
+// 获取以太坊钱包的账户余额是否大于0
 func HasBalance(address string) bool {
 	url := "https://blockscout.yeying.pub/backend/api/v2/addresses/" + address
 
@@ -66,59 +76,59 @@ func HasBalance(address string) bool {
 
 // 验证以太坊地址合法性
 func IsValidAddress(address string) bool {
-    // 1. 基础格式检查
-    re := regexp.MustCompile(`^0x[0-9a-fA-F]{40}$`)
-    if !re.MatchString(address) {
-        return false
-    }
-    
-    // 2. EIP-55 校验和检查
-    return verifyChecksum(address)
+	// 1. 基础格式检查
+	re := regexp.MustCompile(`^0x[0-9a-fA-F]{40}$`)
+	if !re.MatchString(address) {
+		return false
+	}
+
+	// 2. EIP-55 校验和检查
+	return verifyChecksum(address)
 }
 
 func verifyChecksum(address string) bool {
-    address = strings.TrimPrefix(address, "0x")
-    
-    // 关键修复：计算哈希时使用全小写地址
-    hash := sha3.NewLegacyKeccak256()
-    hash.Write([]byte(strings.ToLower(address)))
-    digest := hash.Sum(nil)
-    
-    for i := 0; i < 40; i++ {
-        c := address[i]
-        hashByte := digest[i/2]
-        
-        if i%2 == 0 {
-            hashByte >>= 4
-        } else {
-            hashByte &= 0x0f
-        }
-        
-        // 关键修复：正确的校验逻辑
-        expectedUpper := (hashByte >= 8)
-        isUpper := c >= 'A' && c <= 'F'
-        
-        // 如果是字母且大小写不匹配则返回false
-        if (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') {
-            if isUpper != expectedUpper {
-                return false
-            }
-        }
-    }
-    return true
+	address = strings.TrimPrefix(address, "0x")
+
+	// 关键修复：计算哈希时使用全小写地址
+	hash := sha3.NewLegacyKeccak256()
+	hash.Write([]byte(strings.ToLower(address)))
+	digest := hash.Sum(nil)
+
+	for i := 0; i < 40; i++ {
+		c := address[i]
+		hashByte := digest[i/2]
+
+		if i%2 == 0 {
+			hashByte >>= 4
+		} else {
+			hashByte &= 0x0f
+		}
+
+		// 关键修复：正确的校验逻辑
+		expectedUpper := (hashByte >= 8)
+		isUpper := c >= 'A' && c <= 'F'
+
+		// 如果是字母且大小写不匹配则返回false
+		if (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') {
+			if isUpper != expectedUpper {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 var (
-    adjectives = []string{"Quick", "Lazy", "Funny", "Serious", "Brave"}
-    nouns      = []string{"Fox", "Dog", "Cat", "Mouse", "Wolf"}
+	adjectives = []string{"Quick", "Lazy", "Funny", "Serious", "Brave"}
+	nouns      = []string{"Fox", "Dog", "Cat", "Mouse", "Wolf"}
 )
 
 func generateHumanReadableName() string {
-    rand.Seed(time.Now().UnixNano())
-    adj := adjectives[rand.Intn(len(adjectives))]
-    noun := nouns[rand.Intn(len(nouns))]
-    num := rand.Intn(100)
-    return fmt.Sprintf("%s%s%d", adj, noun, num)
+	rand.Seed(time.Now().UnixNano())
+	adj := adjectives[rand.Intn(len(adjectives))]
+	noun := nouns[rand.Intn(len(nouns))]
+	num := rand.Intn(100)
+	return fmt.Sprintf("%s%s%d", adj, noun, num)
 }
 
 func addUser(r *http.Request, w http.ResponseWriter, h *Web3Handler, address string) (*user.User, error) {
@@ -141,7 +151,7 @@ func addUser(r *http.Request, w http.ResponseWriter, h *Web3Handler, address str
 	return u, nil
 }
 
-func RegisterWalletAccount(r *http.Request, w http.ResponseWriter, h *Web3Handler, address string) (*user.User, error)  {
+func RegisterWalletAccount(r *http.Request, w http.ResponseWriter, h *Web3Handler, address string) (*user.User, error) {
 	ctx := r.Context()
 	u, err := h.userRepo.FindByWalletAddress(ctx, address)
 	if err != nil {
@@ -180,7 +190,7 @@ func (h *Web3Handler) HandleChallenge(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !IsValidAddress(address) {
-		h.sendError(w, http.StatusBadRequest, "MISSING_ADDRESS", "Address parameter is invalid, address " + address)
+		h.sendError(w, http.StatusBadRequest, "MISSING_ADDRESS", "Address parameter is invalid, address "+address)
 		return
 	}
 
@@ -198,7 +208,7 @@ func (h *Web3Handler) HandleChallenge(w http.ResponseWriter, r *http.Request) {
 		// 注册钱包账户
 		RegisterWalletAccount(r, w, h, address)
 	}
-	
+
 	// 检查用户是否存在
 	ctx := r.Context()
 	u, err := h.userRepo.FindByWalletAddress(ctx, address)
@@ -228,13 +238,15 @@ func (h *Web3Handler) HandleChallenge(w http.ResponseWriter, r *http.Request) {
 		zap.String("nonce", challenge.Nonce))
 
 	// 返回挑战
-	response := dto.ChallengeResponse{
-		Nonce:     challenge.Nonce,
-		Message:   challenge.Message,
-		ExpiresAt: challenge.ExpiresAt,
+	data := map[string]interface{}{
+		"address":   address,
+		"challenge": challenge.Message,
+		"nonce":     challenge.Nonce,
+		"issuedAt":  time.Now().UnixMilli(),
+		"expiresAt": challenge.ExpiresAt.UnixMilli(),
 	}
 
-	h.sendJSON(w, http.StatusOK, response)
+	h.sendSDKSuccess(w, data)
 }
 
 // HandleVerify 处理验证请求
@@ -296,27 +308,168 @@ func (h *Web3Handler) HandleVerify(w http.ResponseWriter, r *http.Request) {
 		zap.String("address", req.Address),
 		zap.String("username", u.Username))
 
-	// 构建响应
-	createdAt := ""
-	if !u.CreatedAt.IsZero() {
-		createdAt = u.CreatedAt.Format(timeLayout)
-	}
-	response := dto.VerifyResponse{
-		Token:     token.Value,
-		ExpiresAt: token.ExpiresAt,
-		User: &dto.UserInfo{
-			Username:      u.Username,
-			WalletAddress: u.WalletAddress,
-			Permissions:   h.getPermissionStrings(u.Permissions),
-			CreatedAt:     createdAt,
-		},
+	refreshToken, err := h.web3Auth.GenerateRefreshToken(req.Address)
+	if err != nil {
+		h.logger.Error("failed to generate refresh token", zap.Error(err))
+		h.sendError(w, http.StatusInternalServerError, "REFRESH_TOKEN_FAILED", "Failed to generate refresh token")
+		return
 	}
 
-	h.sendJSON(w, http.StatusOK, response)
+	h.setRefreshCookie(w, r, refreshToken.Value, refreshToken.ExpiresAt)
+
+	data := map[string]interface{}{
+		"address":          req.Address,
+		"token":            token.Value,
+		"expiresAt":        token.ExpiresAt.UnixMilli(),
+		"refreshExpiresAt": refreshToken.ExpiresAt.UnixMilli(),
+	}
+
+	h.sendSDKSuccess(w, data)
+}
+
+// HandlePasswordLogin 用户名密码登录
+func (h *Web3Handler) HandlePasswordLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		h.sendError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Only POST method is allowed")
+		return
+	}
+
+	var req struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.logger.Warn("invalid request body", zap.Error(err))
+		h.sendError(w, http.StatusBadRequest, "INVALID_REQUEST", "Invalid request body")
+		return
+	}
+
+	username := strings.TrimSpace(req.Username)
+	if username == "" || req.Password == "" {
+		h.sendError(w, http.StatusBadRequest, "MISSING_CREDENTIALS", "Username and password are required")
+		return
+	}
+
+	ctx := r.Context()
+	u, err := h.userRepo.FindByUsername(ctx, username)
+	if err != nil {
+		if err == user.ErrUserNotFound {
+			h.sendError(w, http.StatusUnauthorized, "INVALID_CREDENTIALS", "Invalid username or password")
+			return
+		}
+		h.logger.Error("failed to find user", zap.Error(err))
+		h.sendError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to process request")
+		return
+	}
+
+	if !u.HasPassword() {
+		h.sendError(w, http.StatusUnauthorized, "NO_PASSWORD", "Password not set")
+		return
+	}
+
+	hasher := crypto.NewPasswordHasher()
+	if err := hasher.Verify(u.Password, req.Password); err != nil {
+		h.sendError(w, http.StatusUnauthorized, "INVALID_CREDENTIALS", "Invalid username or password")
+		return
+	}
+
+	if strings.TrimSpace(u.WalletAddress) == "" {
+		h.sendError(w, http.StatusBadRequest, "NO_WALLET", "Wallet address not bound")
+		return
+	}
+
+	accessToken, err := h.web3Auth.GenerateAccessToken(u.WalletAddress)
+	if err != nil {
+		h.logger.Error("failed to generate access token", zap.Error(err))
+		h.sendError(w, http.StatusInternalServerError, "TOKEN_GENERATION_FAILED", "Failed to generate token")
+		return
+	}
+
+	refreshToken, err := h.web3Auth.GenerateRefreshToken(u.WalletAddress)
+	if err != nil {
+		h.logger.Error("failed to generate refresh token", zap.Error(err))
+		h.sendError(w, http.StatusInternalServerError, "REFRESH_TOKEN_FAILED", "Failed to generate refresh token")
+		return
+	}
+
+	h.setRefreshCookie(w, r, refreshToken.Value, refreshToken.ExpiresAt)
+
+	data := map[string]interface{}{
+		"address":          u.WalletAddress,
+		"username":         u.Username,
+		"token":            accessToken.Value,
+		"expiresAt":        accessToken.ExpiresAt.UnixMilli(),
+		"refreshExpiresAt": refreshToken.ExpiresAt.UnixMilli(),
+	}
+
+	h.sendSDKSuccess(w, data)
 }
 
 func (h *Web3Handler) HandleRefresh(w http.ResponseWriter, r *http.Request) {
-	// TODO:
+	if r.Method != http.MethodPost {
+		h.sendError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Only POST method is allowed")
+		return
+	}
+
+	cookie, err := r.Cookie(refreshTokenCookieName)
+	if err != nil || cookie.Value == "" {
+		h.sendError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Refresh token is required")
+		return
+	}
+
+	address, err := h.web3Auth.VerifyRefreshToken(cookie.Value)
+	if err != nil {
+		h.logger.Warn("invalid refresh token", zap.Error(err))
+		h.sendError(w, http.StatusUnauthorized, "INVALID_REFRESH_TOKEN", "Invalid refresh token")
+		return
+	}
+
+	// 确认用户存在
+	ctx := r.Context()
+	if _, err := h.userRepo.FindByWalletAddress(ctx, address); err != nil {
+		if err == user.ErrUserNotFound {
+			h.sendError(w, http.StatusNotFound, "USER_NOT_FOUND", "Wallet address not registered")
+			return
+		}
+		h.logger.Error("failed to find user", zap.String("address", address), zap.Error(err))
+		h.sendError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to process request")
+		return
+	}
+
+	accessToken, err := h.web3Auth.GenerateAccessToken(address)
+	if err != nil {
+		h.logger.Error("failed to generate access token", zap.Error(err))
+		h.sendError(w, http.StatusInternalServerError, "TOKEN_GENERATION_FAILED", "Failed to generate token")
+		return
+	}
+
+	refreshToken, err := h.web3Auth.GenerateRefreshToken(address)
+	if err != nil {
+		h.logger.Error("failed to generate refresh token", zap.Error(err))
+		h.sendError(w, http.StatusInternalServerError, "REFRESH_TOKEN_FAILED", "Failed to generate refresh token")
+		return
+	}
+
+	h.setRefreshCookie(w, r, refreshToken.Value, refreshToken.ExpiresAt)
+
+	data := map[string]interface{}{
+		"address":          address,
+		"token":            accessToken.Value,
+		"expiresAt":        accessToken.ExpiresAt.UnixMilli(),
+		"refreshExpiresAt": refreshToken.ExpiresAt.UnixMilli(),
+	}
+
+	h.sendSDKSuccess(w, data)
+}
+
+func (h *Web3Handler) HandleLogout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		h.sendError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Only POST method is allowed")
+		return
+	}
+
+	h.clearRefreshCookie(w, r)
+	h.sendSDKSuccess(w, map[string]bool{"logout": true})
 }
 
 // getPermissionStrings 获取权限字符串列表
@@ -339,6 +492,49 @@ func (h *Web3Handler) getPermissionStrings(perms *user.Permissions) []string {
 	return permissions
 }
 
+func (h *Web3Handler) setRefreshCookie(w http.ResponseWriter, r *http.Request, token string, expiresAt time.Time) {
+	secure := isSecureRequest(r)
+	maxAge := int(time.Until(expiresAt).Seconds())
+	if maxAge < 0 {
+		maxAge = 0
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     refreshTokenCookieName,
+		Value:    token,
+		Path:     "/",
+		Expires:  expiresAt,
+		MaxAge:   maxAge,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   secure,
+	})
+}
+
+func (h *Web3Handler) clearRefreshCookie(w http.ResponseWriter, r *http.Request) {
+	secure := isSecureRequest(r)
+	http.SetCookie(w, &http.Cookie{
+		Name:     refreshTokenCookieName,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   secure,
+	})
+}
+
+func isSecureRequest(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	if forwarded := r.Header.Get("X-Forwarded-Proto"); forwarded != "" {
+		parts := strings.Split(forwarded, ",")
+		proto := strings.TrimSpace(parts[0])
+		return strings.EqualFold(proto, "https")
+	}
+	return false
+}
+
 // sendJSON 发送 JSON 响应
 func (h *Web3Handler) sendJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
@@ -349,8 +545,21 @@ func (h *Web3Handler) sendJSON(w http.ResponseWriter, status int, data interface
 	}
 }
 
+func (h *Web3Handler) sendSDKSuccess(w http.ResponseWriter, data interface{}) {
+	h.sendSDKResponse(w, http.StatusOK, 0, "ok", data)
+}
+
+func (h *Web3Handler) sendSDKResponse(w http.ResponseWriter, status int, code int, message string, data interface{}) {
+	response := sdkResponse{
+		Code:      code,
+		Message:   message,
+		Data:      data,
+		Timestamp: time.Now().UnixMilli(),
+	}
+	h.sendJSON(w, status, response)
+}
+
 // sendError 发送错误响应
 func (h *Web3Handler) sendError(w http.ResponseWriter, status int, code, message string) {
-	response := dto.NewErrorResponse(code, message)
-	h.sendJSON(w, status, response)
+	h.sendSDKResponse(w, status, status, message, nil)
 }

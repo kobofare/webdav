@@ -52,7 +52,7 @@ func (m *LoggerMiddleware) Handle(next http.Handler) http.Handler {
 			fields = append(fields, zap.String("username", u.Username))
 		}
 
-		m.logger.Info("http request", fields...)
+		m.logger.Debug("http request", fields...)
 	})
 }
 

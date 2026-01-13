@@ -29,15 +29,19 @@ type Container struct {
 	DB *database.PostgresDB
 
 	// Repositories
-	UserRepository    user.Repository
-	RecycleRepository repository.RecycleRepository
-	ShareRepository   repository.ShareRepository
+	UserRepository        user.Repository
+	RecycleRepository     repository.RecycleRepository
+	ShareRepository       repository.ShareRepository
+	UserShareRepository   repository.UserShareRepository
+	AddressBookRepository repository.AddressBookRepository
 
 	// Services
-	QuotaService   quota.Service
-	WebDAVService  *service.WebDAVService
-	RecycleService *service.RecycleService
-	ShareService   *service.ShareService
+	QuotaService       quota.Service
+	WebDAVService      *service.WebDAVService
+	RecycleService     *service.RecycleService
+	ShareService       *service.ShareService
+	ShareUserService   *service.ShareUserService
+	AddressBookService *service.AddressBookService
 
 	// Authenticators
 	Authenticators []auth.Authenticator
@@ -45,13 +49,15 @@ type Container struct {
 	Web3Auth       *infraAuth.Web3Authenticator
 
 	// Handlers
-	HealthHandler  *handler.HealthHandler
-	Web3Handler    *handler.Web3Handler
-	WebDAVHandler  *handler.WebDAVHandler
-	QuotaHandler   *handler.QuotaHandler
-	UserHandler    *handler.UserHandler
-	RecycleHandler *handler.RecycleHandler
-	ShareHandler   *handler.ShareHandler
+	HealthHandler      *handler.HealthHandler
+	Web3Handler        *handler.Web3Handler
+	WebDAVHandler      *handler.WebDAVHandler
+	QuotaHandler       *handler.QuotaHandler
+	UserHandler        *handler.UserHandler
+	RecycleHandler     *handler.RecycleHandler
+	ShareHandler       *handler.ShareHandler
+	ShareUserHandler   *handler.ShareUserHandler
+	AddressBookHandler *handler.AddressBookHandler
 
 	// HTTP
 	Router *http.Router
@@ -155,6 +161,10 @@ func (c *Container) initRepositories() error {
 	c.RecycleRepository = repository.NewPostgresRecycleRepository(c.DB.DB)
 	// 分享仓储
 	c.ShareRepository = repository.NewPostgresShareRepository(c.DB.DB)
+	// 定向分享仓储
+	c.UserShareRepository = repository.NewPostgresUserShareRepository(c.DB.DB)
+	// 地址簿仓储
+	c.AddressBookRepository = repository.NewPostgresAddressBookRepository(c.DB.DB)
 
 	c.Logger.Info("using PostgreSQL user repository")
 	c.Logger.Info("repositories initialized", zap.Int("seed_users", len(c.Config.Users)))
@@ -194,6 +204,16 @@ func (c *Container) initServices() error {
 		c.Config,
 		c.Logger,
 	)
+	// 地址簿服务
+	c.AddressBookService = service.NewAddressBookService(c.AddressBookRepository)
+	// 定向分享服务
+	c.ShareUserService = service.NewShareUserService(
+		c.UserShareRepository,
+		c.UserRepository,
+		c.AddressBookService,
+		c.Config,
+		c.Logger,
+	)
 
 	c.Logger.Info("services initialized", zap.Bool("quota_enabled", true))
 
@@ -215,6 +235,7 @@ func (c *Container) initAuthenticators() error {
 		c.UserRepository,
 		c.Config.Web3.JWTSecret,
 		c.Config.Web3.TokenExpiration,
+		c.Config.Web3.RefreshTokenExpiration,
 		c.Logger,
 	)
 	c.Authenticators = append(c.Authenticators, c.Web3Auth)
@@ -232,7 +253,7 @@ func (c *Container) initHandlers() error {
 	// 创建配额处理器
 	c.QuotaHandler = handler.NewQuotaHandler(c.QuotaService, c.Logger)
 	// 用户信息处理器
-	c.UserHandler = handler.NewUserHandler(c.Logger)
+	c.UserHandler = handler.NewUserHandler(c.Logger, c.UserRepository)
 
 	// Web3 处理器
 	if c.Web3Auth != nil {
@@ -263,6 +284,17 @@ func (c *Container) initHandlers() error {
 		c.ShareService,
 		c.Logger,
 	)
+	// 定向分享处理器
+	c.ShareUserHandler = handler.NewShareUserHandler(
+		c.ShareUserService,
+		c.UserRepository,
+		c.Logger,
+	)
+	// 地址簿处理器
+	c.AddressBookHandler = handler.NewAddressBookHandler(
+		c.AddressBookService,
+		c.Logger,
+	)
 
 	c.Logger.Info("handlers initialized")
 
@@ -282,6 +314,8 @@ func (c *Container) initHTTP() error {
 		c.UserHandler,
 		c.RecycleHandler,
 		c.ShareHandler,
+		c.ShareUserHandler,
+		c.AddressBookHandler,
 		c.Logger,
 	)
 

@@ -1,5 +1,5 @@
 {
-  "name": "yeying-assets",
+  "name": "webdav",
   "private": true,
   "version": "0.0.1",
   "type": "module",
@@ -14,11 +14,7 @@
   },
   "dependencies": {
     "@vueuse/core": "^13.1.0",
-    "@yeying-community/yeying-client-ts": "^1.0.24",
-    "@yeying-community/yeying-i18n": "^0.0.3",
-    "@yeying-community/yeying-next": "^0.0.46",
-    "@yeying-community/yeying-wallet": "^0.0.9",
-    "@yeying-community/yeying-web3": "^0.0.36",
+    "@yeying-community/web3": "^1.0.1",
     "buffer": "^6.0.3",
     "element-plus": "^2.9.2",
     "i18next": "^24.2.0",

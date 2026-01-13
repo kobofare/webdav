@@ -29,7 +29,8 @@ import AppHeader from './AppHeader/Index.vue'
 
     .el-main {
       padding: 16px;
-      overflow: auto;
+      overflow: hidden;
+      min-height: 0;
     }
   }
 }

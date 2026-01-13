@@ -57,7 +57,7 @@ func (a *BasicAuthenticator) Authenticate(ctx context.Context, credentials inter
 
 	// 如果启用了无密码模式，直接返回
 	if a.noPassword {
-		a.logger.Info("user authenticated (no password mode)",
+		a.logger.Debug("user authenticated (no password mode)",
 			zap.String("username", u.Username))
 		return u, nil
 	}
@@ -76,7 +76,7 @@ func (a *BasicAuthenticator) Authenticate(ctx context.Context, credentials inter
 		return nil, user.ErrInvalidPassword
 	}
 
-	a.logger.Info("user authenticated via basic auth",
+	a.logger.Debug("user authenticated via basic auth",
 		zap.String("username", u.Username))
 
 	return u, nil

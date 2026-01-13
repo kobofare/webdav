@@ -10,7 +10,7 @@ set -o pipefail
 
 
 LOGFILE_PATH="/opt/logs"
-LOGFILE_NAME="23-upgrade-yeying-assets.log"
+LOGFILE_NAME="23-upgrade-webdav.log"
 LOGFILE="$LOGFILE_PATH/$LOGFILE_NAME"
 if [[ ! -d  "$LOGFILE_PATH" ]]
 then
@@ -25,7 +25,7 @@ then
     echo -e "clear old logs at $(date) to avoid log file too big" > "$LOGFILE"
 fi
 cd "$(dirname "$0")" || exit 1
-service_name="yeying-assets"
+service_name="yeying-"webdav
 
 
 index=1

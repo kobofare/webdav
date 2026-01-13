@@ -53,8 +53,9 @@ type WebDAVConfig struct {
 
 // Web3Config Web3 配置
 type Web3Config struct {
-	JWTSecret       string        `yaml:"jwt_secret"`
-	TokenExpiration time.Duration `yaml:"token_expiration"`
+	JWTSecret              string        `yaml:"jwt_secret"`
+	TokenExpiration        time.Duration `yaml:"token_expiration"`
+	RefreshTokenExpiration time.Duration `yaml:"refresh_token_expiration"`
 }
 
 // SecurityConfig 安全配置
@@ -130,7 +131,8 @@ func DefaultConfig() *Config {
 			Permissions: "R",
 		},
 		Web3: Web3Config{
-			TokenExpiration: 24 * time.Hour,
+			TokenExpiration:        24 * time.Hour,
+			RefreshTokenExpiration: 30 * 24 * time.Hour,
 		},
 		Security: SecurityConfig{
 			NoPassword:  false,

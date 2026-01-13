@@ -7,7 +7,7 @@ set -u
 set -o pipefail
 
 LOGFILE_PATH="/opt/logs"
-LOGFILE_NAME="13-code-status-yeying-assets.log"
+LOGFILE_NAME="13-code-status-webdav.log"
 LOGFILE="$LOGFILE_PATH/$LOGFILE_NAME"
 if [[ ! -d  "$LOGFILE_PATH" ]]
 then
@@ -60,7 +60,7 @@ else
 	if [[ -z "$dir_package" ]]; then
 		pushd "$PACKAGE_DIR"
 		filename=$(ls "${service_name}"-*.tar.gz)
-		temp=${filename#yeying-assets-}  # 去掉 "yeying-assets-"
+		temp=${filename#webdav-}  # 去掉 "webdav-"
 		package_version=${temp%.tar.gz}  # 去掉 ".tar.gz"
 		echo -e "untar package and get package version is:$package_version" | tee -a "$LOGFILE"
 		tar -zxf "${service_name}-${package_version}.tar.gz"
@@ -106,13 +106,13 @@ popd
 
 index=$((index+1))
 echo -e "\nstep $index -- copy ${service_name} package to ${PACKAGE_DIR}"  | tee -a "$LOGFILE"
-compiled_package=$(find "$work_dir/output" -name "yeying-assets-*.tar.gz")
+compiled_package=$(find "$work_dir/output" -name "webdav-*.tar.gz")
 echo -e "get compiled package: $compiled_package"  | tee -a "$LOGFILE"
 if [ -f "$compiled_package" ]; then
 	cp -a "$compiled_package" "${PACKAGE_DIR}"
 	pushd "$PACKAGE_DIR"
 	filename=$(ls "${service_name}"-*.tar.gz)
-	temp=${filename#yeying-assets-}  # 去掉 "yeying-assets-"
+	temp=${filename#webdav-}  # 去掉 "webdav-"
 	package_version=${temp%.tar.gz}  # 去掉 ".tar.gz"
 	echo -e "get generated package version is:$package_version" | tee -a "$LOGFILE"
 	tar -zxf "${service_name}-${package_version}.tar.gz"

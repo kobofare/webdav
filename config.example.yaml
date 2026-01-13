@@ -36,6 +36,7 @@ webdav:
 web3:
   jwt_secret: "your-super-secret-jwt-key-at-least-32-characters-long"
   token_expiration: 24h
+  refresh_token_expiration: 720h
 
 # Security Configuration
 security:

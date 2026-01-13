@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 LOGFILE_PATH="/opt/logs"
-LOGFILE_NAME="03-package-yeying-assets.log"
+LOGFILE_NAME="03-package-webdav.log"
 LOGFILE="$LOGFILE_PATH/$LOGFILE_NAME"
 if [[ ! -d  "$LOGFILE_PATH" ]]
 then

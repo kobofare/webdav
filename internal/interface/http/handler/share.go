@@ -248,7 +248,7 @@ func (h *ShareHandler) buildShareURL(r *http.Request, token string) string {
 	return scheme + "://" + host + "/api/v1/public/share/" + token
 }
 
-const timeLayout = "2006-01-02T15:04:05Z07:00"
+const timeLayout = "2006-01-02 15:04:05"
 
 func shouldCountAccess(r *http.Request) bool {
 	rangeHeader := r.Header.Get("Range")

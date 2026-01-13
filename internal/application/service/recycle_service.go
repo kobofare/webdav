@@ -49,6 +49,7 @@ type RecycleItemResponse struct {
 	Size      int64  `json:"size"`
 	DeletedAt string `json:"deletedAt"`
 	Directory string `json:"directory"`
+	IsDir     bool   `json:"isDir"`
 }
 
 // ListResponse 列表响应
@@ -106,6 +107,12 @@ func (s *RecycleService) List(ctx context.Context, u *user.User) (*ListResponse,
 	}
 
 	for _, item := range items {
+		isDir := false
+		if recyclePath, err := s.findRecyclePath(item); err == nil {
+			if info, err := os.Stat(recyclePath); err == nil {
+				isDir = info.IsDir()
+			}
+		}
 		response.Items = append(response.Items, &RecycleItemResponse{
 			Hash:      item.Hash,
 			Name:      item.Name,
@@ -113,6 +120,7 @@ func (s *RecycleService) List(ctx context.Context, u *user.User) (*ListResponse,
 			Size:      item.Size,
 			DeletedAt: item.DeletedAt.Format("2006-01-02T15:04:05Z07:00"),
 			Directory: item.Directory,
+			IsDir:     isDir,
 		})
 	}
 
@@ -187,7 +195,7 @@ func (s *RecycleService) Remove(ctx context.Context, u *user.User, hash string) 
 
 	// 删除回收站中的实际文件
 	if recyclePath, err := s.findRecyclePath(item); err == nil {
-		if err := os.Remove(recyclePath); err != nil && !os.IsNotExist(err) {
+		if err := os.RemoveAll(recyclePath); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("failed to delete recycle file: %w", err)
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -206,6 +214,43 @@ func (s *RecycleService) Remove(ctx context.Context, u *user.User, hash string) 
 	)
 
 	return nil
+}
+
+// Clear 清空回收站
+func (s *RecycleService) Clear(ctx context.Context, u *user.User) (int, error) {
+	items, err := s.recycleRepo.GetByUserID(ctx, u.ID)
+	if err != nil {
+		return 0, fmt.Errorf("failed to list recycle items: %w", err)
+	}
+
+	cleared := 0
+	var firstErr error
+	for _, item := range items {
+		if recyclePath, err := s.findRecyclePath(item); err == nil {
+			if err := os.RemoveAll(recyclePath); err != nil && !os.IsNotExist(err) {
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
+			}
+		} else if !errors.Is(err, os.ErrNotExist) && firstErr == nil {
+			firstErr = err
+		}
+
+		if err := s.recycleRepo.DeleteByHash(ctx, item.Hash); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		cleared += 1
+	}
+
+	if firstErr != nil {
+		return cleared, fmt.Errorf("failed to clear recycle items: %w", firstErr)
+	}
+
+	return cleared, nil
 }
 
 // getUserRootDir 获取用户的根目录

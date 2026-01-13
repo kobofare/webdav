@@ -13,11 +13,12 @@ import (
 
 // Web3Authenticator Web3 认证器
 type Web3Authenticator struct {
-	userRepo       user.Repository
-	jwtManager     *JWTManager
-	challengeStore *ChallengeStore
-	ethSigner      *crypto.EthereumSigner
-	logger         *zap.Logger
+	userRepo          user.Repository
+	jwtManager        *JWTManager
+	challengeStore    *ChallengeStore
+	ethSigner         *crypto.EthereumSigner
+	logger            *zap.Logger
+	refreshExpiration time.Duration
 }
 
 // NewWeb3Authenticator 创建 Web3 认证器
@@ -25,14 +26,16 @@ func NewWeb3Authenticator(
 	userRepo user.Repository,
 	jwtSecret string,
 	tokenExpiration time.Duration,
+	refreshTokenExpiration time.Duration,
 	logger *zap.Logger,
 ) *Web3Authenticator {
 	return &Web3Authenticator{
-		userRepo:       userRepo,
-		jwtManager:     NewJWTManager(jwtSecret, tokenExpiration),
-		challengeStore: NewChallengeStore(),
-		ethSigner:      crypto.NewEthereumSigner(),
-		logger:         logger,
+		userRepo:          userRepo,
+		jwtManager:        NewJWTManager(jwtSecret, tokenExpiration),
+		challengeStore:    NewChallengeStore(),
+		ethSigner:         crypto.NewEthereumSigner(),
+		logger:            logger,
+		refreshExpiration: refreshTokenExpiration,
 	}
 }
 
@@ -135,6 +138,21 @@ func (a *Web3Authenticator) VerifySignature(ctx context.Context, address, signat
 		zap.String("address", address))
 
 	return token, nil
+}
+
+// GenerateAccessToken 生成访问令牌
+func (a *Web3Authenticator) GenerateAccessToken(address string) (*auth.Token, error) {
+	return a.jwtManager.Generate(address)
+}
+
+// GenerateRefreshToken 生成刷新令牌
+func (a *Web3Authenticator) GenerateRefreshToken(address string) (*auth.Token, error) {
+	return a.jwtManager.GenerateRefresh(address, a.refreshExpiration)
+}
+
+// VerifyRefreshToken 验证刷新令牌
+func (a *Web3Authenticator) VerifyRefreshToken(token string) (string, error) {
+	return a.jwtManager.VerifyRefresh(token)
 }
 
 // GetJWTManager 获取 JWT 管理器（用于其他地方验证 token）

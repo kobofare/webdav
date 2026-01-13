@@ -27,12 +27,19 @@ func (fsys *UnicodeFileSystem) Stat(ctx context.Context, name string) (os.FileIn
 	if err != nil {
 		return nil, err
 	}
-	baseName := path.Base(filepath.ToSlash(name))
+	baseName := path.Base(strings.TrimSuffix(filepath.ToSlash(name), "/"))
+	if IsIgnoredName(baseName) {
+		return nil, os.ErrNotExist
+	}
 	return &fileInfo{FileInfo: info, name: baseName}, nil
 }
 
 // OpenFile 打开或创建文件
 func (fsys *UnicodeFileSystem) OpenFile(ctx context.Context, name string, flag int, perm os.FileMode) (webdav.File, error) {
+	baseName := path.Base(strings.TrimSuffix(filepath.ToSlash(name), "/"))
+	if IsIgnoredName(baseName) {
+		return nil, os.ErrNotExist
+	}
 	fullPath := filepath.Join(fsys.dir, name)
 	f, err := os.OpenFile(fullPath, flag, perm)
 	if err != nil {
@@ -48,12 +55,21 @@ func (fsys *UnicodeFileSystem) Create(ctx context.Context, name string) (webdav.
 
 // Mkdir 新建目录
 func (fsys *UnicodeFileSystem) Mkdir(ctx context.Context, name string, perm os.FileMode) error {
+	baseName := path.Base(strings.TrimSuffix(filepath.ToSlash(name), "/"))
+	if IsIgnoredName(baseName) {
+		return os.ErrNotExist
+	}
 	fullPath := filepath.Join(fsys.dir, name)
 	return os.MkdirAll(fullPath, perm)
 }
 
 // Rename 重命名/移动文件
 func (fsys *UnicodeFileSystem) Rename(ctx context.Context, oldName, newName string) error {
+	oldBase := path.Base(strings.TrimSuffix(filepath.ToSlash(oldName), "/"))
+	newBase := path.Base(strings.TrimSuffix(filepath.ToSlash(newName), "/"))
+	if IsIgnoredName(oldBase) || IsIgnoredName(newBase) {
+		return os.ErrNotExist
+	}
 	oldPath := filepath.Join(fsys.dir, oldName)
 	newPath := filepath.Join(fsys.dir, newName)
 	return os.Rename(oldPath, newPath)
@@ -61,6 +77,10 @@ func (fsys *UnicodeFileSystem) Rename(ctx context.Context, oldName, newName stri
 
 // RemoveAll 删除文件或目录
 func (fsys *UnicodeFileSystem) RemoveAll(ctx context.Context, name string) error {
+	baseName := path.Base(strings.TrimSuffix(filepath.ToSlash(name), "/"))
+	if IsIgnoredName(baseName) {
+		return os.ErrNotExist
+	}
 	fullPath := filepath.Join(fsys.dir, name)
 	return os.RemoveAll(fullPath)
 }
@@ -77,6 +97,9 @@ func (fsys *UnicodeFileSystem) ReadDir(ctx context.Context, name string) ([]os.F
 	for _, entry := range entries {
 		info, err := entry.Info()
 		if err != nil {
+			continue
+		}
+		if IsIgnoredName(entry.Name()) {
 			continue
 		}
 		infos = append(infos, &fileInfo{FileInfo: info, name: entry.Name()})
@@ -112,6 +135,20 @@ func ResolvePath(path string) string {
 		path = "/" + path
 	}
 	return path
+}
+
+// IsIgnoredName 判断是否为需要忽略的系统文件
+func IsIgnoredName(name string) bool {
+	if name == "" {
+		return false
+	}
+	if name == ".DS_Store" || name == ".AppleDouble" || name == "Thumbs.db" {
+		return true
+	}
+	if strings.HasPrefix(name, "._") {
+		return true
+	}
+	return false
 }
 
 // 确保 UnicodeFileSystem 实现 webdav.FileSystem

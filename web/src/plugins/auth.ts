@@ -1,4 +1,7 @@
-import { authApi } from '@/api'
+import { getProvider, requestAccounts, loginWithChallenge, logout as sdkLogout, clearAccessToken, getAccessToken, setAccessToken } from '@yeying-community/web3'
+
+const API_BASE = import.meta.env.VITE_API_BASE || ''
+const AUTH_BASE = API_BASE ? `${API_BASE.replace(/\/+$/, '')}/api/v1/public/auth` : '/api/v1/public/auth'
 
 // 钱包 Provider 类型
 interface WalletProvider {
@@ -72,13 +75,13 @@ export function getWalletName(): string {
 
 // 连接钱包并登录
 export async function connectWallet(): Promise<string | null> {
-  const provider = getWalletProvider()
+  const provider = await getProvider()
   if (!provider) {
     throw new Error(`未检测到钱包，请安装 MetaMask 或夜莺钱包`)
   }
 
   try {
-    const accounts = await provider.request({ method: 'eth_requestAccounts' }) as string[]
+    const accounts = await requestAccounts({ provider })
     if (!accounts || accounts.length === 0) {
       throw new Error('未获取到账户')
     }
@@ -95,49 +98,83 @@ export function getCurrentAccount(): string | null {
 
 // 钱包登录流程
 export async function loginWithWallet(): Promise<void> {
-  const provider = getWalletProvider()
+  const provider = await getProvider()
   if (!provider) {
     throw new Error('未检测到钱包')
   }
 
-  const address = await connectWallet()
+  const accounts = await requestAccounts({ provider })
+  const address = accounts[0]
   if (!address) return
 
   localStorage.setItem('currentAccount', address)
+  localStorage.setItem('walletAddress', address)
 
   try {
-    // 1. 获取挑战
-    const challenge = await authApi.getChallenge(address)
+    const result = await loginWithChallenge({
+      provider,
+      address,
+      baseUrl: AUTH_BASE
+    })
 
-    // 2. 使用钱包签名
-    const signature = await provider.request({
-      method: 'personal_sign',
-      params: [challenge.message, address]
-    }) as unknown as string
-
-    // 3. 验证签名获取 token
-    const result = await authApi.verifySignature(address, signature)
-
-    localStorage.setItem('authToken', result.token)
-    // 同时设置 cookie，浏览器会在 Range 请求中自动带上
-    document.cookie = `authToken=${result.token}; path=/; max-age=86400`
-
-    // 存储用户信息
-    localStorage.setItem('username', result.user.username)
-    localStorage.setItem('walletAddress', result.user.wallet_address)
-    localStorage.setItem('permissions', JSON.stringify(result.user.permissions || []))
-
-    if (result.user.created_at) {
-      localStorage.setItem('createdAt', result.user.created_at)
+    if (result.token) {
+      // 用于 Range/下载请求携带认证
+      document.cookie = `authToken=${result.token}; path=/; max-age=86400`
     }
   } catch (error) {
     throw new Error(`登录失败: ${error}`)
   }
 }
 
+// 用户名密码登录
+export async function loginWithPassword(username: string, password: string): Promise<void> {
+  const response = await fetch(`${AUTH_BASE}/password/login`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'accept': 'application/json'
+    },
+    body: JSON.stringify({ username, password })
+  })
+
+  if (!response.ok) {
+    const error = await response.text()
+    throw new Error(error || `HTTP ${response.status}`)
+  }
+
+  const payload = await response.json()
+  if (payload?.code !== 0) {
+    throw new Error(payload?.message || '登录失败')
+  }
+
+  const data = payload?.data || {}
+  const token = data.token
+  if (!token) {
+    throw new Error('登录失败：未返回 token')
+  }
+
+  setAccessToken(token)
+
+  if (data.address) {
+    localStorage.setItem('currentAccount', data.address)
+    localStorage.setItem('walletAddress', data.address)
+  } else {
+    localStorage.setItem('currentAccount', username)
+  }
+
+  if (data.username) {
+    localStorage.setItem('username', data.username)
+  }
+
+  document.cookie = `authToken=${token}; path=/; max-age=86400`
+}
+
 // 登出
 export function logout(): void {
-  localStorage.removeItem('authToken')
+  void sdkLogout({ baseUrl: AUTH_BASE }).catch((error) => {
+    console.warn('logout failed:', error)
+  })
+  clearAccessToken()
   localStorage.removeItem('currentAccount')
   localStorage.removeItem('username')
   localStorage.removeItem('walletAddress')
@@ -150,7 +187,7 @@ export function logout(): void {
 
 // 检查是否已登录
 export function isLoggedIn(): boolean {
-  const token = localStorage.getItem('authToken')
+  const token = getAccessToken()
   if (!token) return false
 
   try {
@@ -164,7 +201,7 @@ export function isLoggedIn(): boolean {
 
 // 获取 token
 export function getToken(): string | null {
-  return localStorage.getItem('authToken')
+  return getAccessToken()
 }
 
 // 获取用户名
@@ -173,7 +210,7 @@ export function getUsername(): string | null {
 }
 
 function parseTokenPayload(): Record<string, unknown> | null {
-  const token = localStorage.getItem('authToken')
+  const token = getAccessToken()
   if (!token) return null
   try {
     const payload = token.split('.')[1]
