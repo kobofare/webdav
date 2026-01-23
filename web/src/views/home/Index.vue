@@ -1970,11 +1970,11 @@ onMounted(() => {
             <button
               type="button"
               class="nav-item"
-              :class="{ active: showRecycle }"
-              @click="enterRecycle"
+              :class="{ active: showSharedWithMe }"
+              @click="enterSharedWithMe"
             >
-              <el-icon class="nav-icon"><Delete /></el-icon>
-              <span>回收站</span>
+              <el-icon class="nav-icon"><UserFilled /></el-icon>
+              <span>共享给我</span>
             </button>
             <button
               type="button"
@@ -1997,15 +1997,6 @@ onMounted(() => {
             <button
               type="button"
               class="nav-item"
-              :class="{ active: showSharedWithMe }"
-              @click="enterSharedWithMe"
-            >
-              <el-icon class="nav-icon"><UserFilled /></el-icon>
-              <span>共享给我</span>
-            </button>
-            <button
-              type="button"
-              class="nav-item"
               :class="{ active: showQuotaManage }"
               @click="enterQuotaManage"
             >
@@ -2020,6 +2011,15 @@ onMounted(() => {
             >
               <el-icon class="nav-icon"><DocumentCopy /></el-icon>
               <span>地址簿</span>
+            </button>
+            <button
+              type="button"
+              class="nav-item"
+              :class="{ active: showRecycle }"
+              @click="enterRecycle"
+            >
+              <el-icon class="nav-icon"><Delete /></el-icon>
+              <span>回收站</span>
             </button>
           </div>
         </div>
@@ -2480,6 +2480,7 @@ onMounted(() => {
   height: 100%;
   overflow: hidden;
   background: linear-gradient(180deg, #f6f8fb 0%, #f2f4f7 100%);
+  padding: 0;
 }
 
 .login-page {
@@ -2506,7 +2507,7 @@ onMounted(() => {
   display: grid;
   grid-template-columns: 240px minmax(0, 1fr);
   gap: 16px;
-  padding: 16px;
+  padding: 0;
   height: 100%;
   box-sizing: border-box;
   min-height: 0;
