@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount, nextTick, computed, watch } from 'vue'
+import { ref, onMounted, onBeforeUnmount, computed, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { ArrowLeft, ArrowUp, Delete, FolderAdd, FolderOpened, Refresh, Upload, DocumentCopy, Share, UserFilled, Search, MoreFilled } from '@element-plus/icons-vue'
 import { ElMessageBox } from 'element-plus'
 import { quotaApi, userApi, recycleApi, shareApi, directShareApi, type RecycleItem, type ShareItem, type DirectShareItem } from '@/api'
-import { isLoggedIn, hasWallet, getUsername, getWalletName, getCurrentAccount, getUserPermissions, getUserCreatedAt } from '@/plugins/auth'
+import { isLoggedIn, hasWallet, getUsername, getWalletName, getCurrentAccount, getUserPermissions, getUserCreatedAt, loginWithWallet, loginWithPassword } from '@/plugins/auth'
 import { parsePropfindResponse } from '@/utils/webdav'
 import { copyText } from '@/utils/clipboard'
 import { shortenAddress } from '@/utils/address'
@@ -17,7 +17,8 @@ import FileTableView from './components/FileTableView.vue'
 import ShareTableView from './components/ShareTableView.vue'
 import SharedWithMeTableView from './components/SharedWithMeTableView.vue'
 import RecycleTableView from './components/RecycleTableView.vue'
-import type { DropEntry, FileItem, UploadItem } from './types'
+import UploadTaskListView from './components/UploadTaskListView.vue'
+import type { DropEntry, FileItem, UploadItem, UploadTask } from './types'
 
 // 状态
 const loading = ref(false)
@@ -32,7 +33,13 @@ const userInfo = ref<{
   updated_at?: string
   has_password?: boolean
 } | null>(null)
-const uploadProgress = ref<string | null>(null)
+const uploadTasks = ref<UploadTask[]>([])
+const loginSubmitting = ref(false)
+const showPasswordLoginForm = ref(false)
+const passwordLoginForm = ref({
+  username: '',
+  password: ''
+})
 
 // 回收站相关状态
 const showRecycle = ref(false)
@@ -54,6 +61,9 @@ const sharedEntriesLoading = ref(false)
 const showQuotaManage = ref(false)
 const quotaManageLoading = ref(false)
 const showAddressBook = ref(false)
+const showUploadTasks = ref(false)
+const uploadTasksReturnView = ref<ViewKey | null>(null)
+const uploadTasksReturnPath = ref('/')
 const detailDrawerVisible = ref(false)
 const detailMode = ref<'file' | 'recycle' | 'share' | 'directShare' | 'receivedShare' | 'sharedEntry' | null>(null)
 const detailItem = ref<FileItem | RecycleItem | ShareItem | DirectShareItem | null>(null)
@@ -113,11 +123,11 @@ const VIEW_STORAGE_KEY = 'webdav:lastView'
 const FILE_PATH_STORAGE_KEY = 'webdav:lastFilePath'
 const SHARED_ACTIVE_STORAGE_KEY = 'webdav:sharedActiveId'
 const SHARED_PATH_STORAGE_KEY = 'webdav:sharedPath'
-type ViewKey = 'files' | 'recycle' | 'shareLink' | 'shareDirect' | 'sharedWithMe' | 'quotaManage' | 'addressBook'
+type ViewKey = 'files' | 'recycle' | 'shareLink' | 'shareDirect' | 'sharedWithMe' | 'quotaManage' | 'addressBook' | 'uploadTasks'
 
 // 是否显示回收站列表
 const canUpload = computed(() => {
-  if (showRecycle.value || showShare.value || showQuotaManage.value || showAddressBook.value) return false
+  if (showRecycle.value || showShare.value || showQuotaManage.value || showAddressBook.value || showUploadTasks.value) return false
   if (showSharedWithMe.value) return isSharedBrowse.value && sharedCanCreate.value
   return true
 })
@@ -136,12 +146,15 @@ const userProfile = computed(() => {
   const hasPassword = Boolean(userInfo.value?.has_password)
   return { username, walletAddress, walletName, permissions, createdAt, hasPassword }
 })
-const showSearch = computed(() => !showQuotaManage.value && !showAddressBook.value)
+const showSearch = computed(() => !showQuotaManage.value && !showAddressBook.value && !showUploadTasks.value)
 const showListHeader = computed(() => !showQuotaManage.value && !showAddressBook.value)
 type MobileAction = { command: string; label: string; disabled?: boolean }
 type MobileActionGroup = { title: string; items: MobileAction[] }
 
 const mobileActionGroups = computed<MobileActionGroup[]>(() => {
+  if (showUploadTasks.value) {
+    return []
+  }
   if (showRecycle.value) {
     return [
       {
@@ -214,15 +227,34 @@ const mobileActionGroups = computed<MobileActionGroup[]>(() => {
     }
   ]
 })
-const hasMobileActions = computed(() => mobileActionGroups.value.some(group => group.items.length))
+const flatMobileActions = computed(() => mobileActionGroups.value.flatMap(group => group.items))
+const hasMobileActions = computed(() => flatMobileActions.value.length > 0)
+const singleRefreshAction = computed<MobileAction | null>(() => {
+  if (flatMobileActions.value.length !== 1) return null
+  const only = flatMobileActions.value[0]
+  return only.command === 'refresh' ? only : null
+})
+const showMobileMenu = computed(() => hasMobileActions.value && !singleRefreshAction.value)
+const mobileActionIcons: Record<string, any> = {
+  createFolder: FolderAdd,
+  uploadFile: Upload,
+  uploadDir: FolderOpened,
+  clearRecycle: Delete,
+  refresh: Refresh
+}
+function getMobileActionIcon(command: string) {
+  return mobileActionIcons[command] || MoreFilled
+}
 const searchKeyword = computed({
   get: () => {
+    if (showUploadTasks.value) return ''
     if (showRecycle.value) return recycleSearch.value
-  if (showShare.value) return shareTab.value === 'link' ? shareLinkSearch.value : shareDirectSearch.value
-  if (showSharedWithMe.value) return sharedSearch.value
-  return fileSearch.value
+    if (showShare.value) return shareTab.value === 'link' ? shareLinkSearch.value : shareDirectSearch.value
+    if (showSharedWithMe.value) return sharedSearch.value
+    return fileSearch.value
   },
   set: (value: string) => {
+    if (showUploadTasks.value) return
     if (showRecycle.value) {
       recycleSearch.value = value
       return
@@ -243,6 +275,7 @@ const searchKeyword = computed({
   }
 })
 const searchPlaceholder = computed(() => {
+  if (showUploadTasks.value) return '搜索上传任务'
   if (showRecycle.value) return '搜索回收站'
   if (showShare.value) return shareTab.value === 'link' ? '搜索分享链接' : '搜索定向分享'
   if (showSharedWithMe.value) return sharedActive.value ? '搜索共享内容' : '搜索共享列表'
@@ -254,6 +287,7 @@ const mobileLocationLabel = computed(() => {
   if (showSharedWithMe.value) return sharedActive.value ? '共享内容' : '共享给我'
   if (showQuotaManage.value) return '用户中心'
   if (showAddressBook.value) return '地址簿'
+  if (showUploadTasks.value) return '上传任务'
   const parts = currentPath.value.split('/').filter(Boolean)
   return parts.length ? parts[parts.length - 1] : '根目录'
 })
@@ -451,6 +485,33 @@ function showError(message: string, title = '错误'): void {
     type: 'error',
     closeOnClickModal: false
   })
+}
+
+async function handleWalletLogin() {
+  try {
+    await loginWithWallet()
+    window.location.reload()
+  } catch (error: any) {
+    showError(error?.message || '钱包登录失败')
+  }
+}
+
+async function handlePasswordLogin() {
+  const username = passwordLoginForm.value.username.trim()
+  const password = passwordLoginForm.value.password
+  if (!username || !password) {
+    showError('请输入用户名和密码')
+    return
+  }
+  loginSubmitting.value = true
+  try {
+    await loginWithPassword(username, password)
+    window.location.reload()
+  } catch (error: any) {
+    showError(error?.message || '登录失败')
+  } finally {
+    loginSubmitting.value = false
+  }
 }
 
 // 获取文件列表 (WebDAV PROPFIND)
@@ -823,7 +884,7 @@ function downloadPreview() {
 }
 
 function handleRowClick(row: FileItem | RecycleItem | ShareItem | DirectShareItem) {
-  if (showQuotaManage.value || showAddressBook.value) return
+  if (showQuotaManage.value || showAddressBook.value || showUploadTasks.value) return
   if (showRecycle.value) {
     openDetailDrawer('recycle', row as RecycleItem)
     return
@@ -883,6 +944,8 @@ function refreshCurrentView() {
     fetchUserCenter()
   } else if (showAddressBook.value) {
     addressBookStore.fetchAddressBook()
+  } else if (showUploadTasks.value) {
+    return
   } else {
     fetchFiles(currentPath.value)
   }
@@ -931,8 +994,7 @@ async function downloadFile(item: FileItem) {
     return
   }
   const apiPath = buildApiPath(item.path)
-
-  uploadProgress.value = '下载中...'
+  showInfo('下载中...')
 
   try {
     const token = localStorage.getItem('authToken') || ''
@@ -946,10 +1008,6 @@ async function downloadFile(item: FileItem) {
     document.body.removeChild(a)
   } catch (error) {
     showError(`下载失败: ${String(error)}`)
-  } finally {
-    window.setTimeout(() => {
-      uploadProgress.value = null
-    }, 800)
   }
 }
 
@@ -1042,7 +1100,7 @@ async function downloadSharedRoot(item: DirectShareItem) {
   if (!item || item.isDir) return
   const params = new URLSearchParams({ shareId: item.id, path: '' })
   const url = buildShareUserUrl('/api/v1/public/share/user/download', params)
-  uploadProgress.value = '下载中...'
+  showInfo('下载中...')
   try {
     const token = localStorage.getItem('authToken') || ''
     ensureAuthCookie(token)
@@ -1055,10 +1113,6 @@ async function downloadSharedRoot(item: DirectShareItem) {
     document.body.removeChild(a)
   } catch (error) {
     showError(`下载失败: ${String(error)}`)
-  } finally {
-    window.setTimeout(() => {
-      uploadProgress.value = null
-    }, 800)
   }
 }
 
@@ -1067,7 +1121,7 @@ async function downloadSharedFile(item: FileItem) {
   const relPath = normalizeShareRelative(item.path)
   const params = new URLSearchParams({ shareId: sharedActive.value.id, path: relPath })
   const url = buildShareUserUrl('/api/v1/public/share/user/download', params)
-  uploadProgress.value = '下载中...'
+  showInfo('下载中...')
   try {
     const token = localStorage.getItem('authToken') || ''
     ensureAuthCookie(token)
@@ -1080,10 +1134,6 @@ async function downloadSharedFile(item: FileItem) {
     document.body.removeChild(a)
   } catch (error) {
     showError(`下载失败: ${String(error)}`)
-  } finally {
-    window.setTimeout(() => {
-      uploadProgress.value = null
-    }, 800)
   }
 }
 
@@ -1332,13 +1382,119 @@ async function walkEntry(entry: DropEntry, files: UploadItem[], directories: Set
   }
 }
 
+function createUploadTaskId(): string {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+    return (crypto as Crypto).randomUUID()
+  }
+  return `task_${Date.now()}_${Math.random().toString(16).slice(2)}`
+}
+
+function buildTargetPath(basePath: string, relativePath: string): string {
+  const cleanBase = basePath.replace(/^\/+/, '').replace(/\/$/, '')
+  const cleanRelative = normalizeRelativePath(relativePath)
+  if (!cleanBase) return '/' + cleanRelative
+  if (!cleanRelative) return '/' + cleanBase
+  return '/' + cleanBase + '/' + cleanRelative
+}
+
+function createUploadTask(item: UploadItem, options: { basePath: string; isShared: boolean; shareId?: string }): UploadTask {
+  const relativePath = normalizeRelativePath(item.relativePath || item.file.name) || item.file.name
+  const now = Date.now()
+  return {
+    id: createUploadTaskId(),
+    name: item.file.name,
+    relativePath,
+    size: item.file.size,
+    status: 'queued',
+    progress: 0,
+    createdAt: now,
+    updatedAt: now,
+    file: item.file,
+    targetPath: options.isShared ? undefined : buildTargetPath(options.basePath, relativePath),
+    isShared: options.isShared,
+    shareId: options.shareId,
+    sharePath: options.isShared ? relativePath : undefined
+  }
+}
+
+function addUploadTasks(tasks: UploadTask[]) {
+  if (!tasks.length) return
+  uploadTasks.value = [...tasks, ...uploadTasks.value]
+}
+
+function updateUploadTask(task: UploadTask, patch: Partial<UploadTask>) {
+  Object.assign(task, patch)
+  task.updatedAt = Date.now()
+}
+
+function getUploadUrlForTask(task: UploadTask): string | null {
+  if (task.isShared) {
+    if (!task.shareId) return null
+    const path = normalizeRelativePath(task.sharePath || task.relativePath || task.name)
+    const params = new URLSearchParams({ shareId: task.shareId, path })
+    return buildShareUserUrl('/api/v1/public/share/user/upload', params)
+  }
+  const targetPath = task.targetPath || buildTargetPath('', task.relativePath || task.name)
+  return buildApiPath(targetPath)
+}
+
+function uploadFileWithProgress(
+  url: string,
+  file: File,
+  token: string,
+  onProgress: (progress: number) => void
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('PUT', url, true)
+    if (token) {
+      xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+    }
+    xhr.upload.onprogress = event => {
+      if (!event.lengthComputable) return
+      const percent = Math.min(99, Math.round((event.loaded / event.total) * 100))
+      onProgress(percent)
+    }
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve()
+      } else {
+        reject(new Error(`上传失败: ${xhr.status}`))
+      }
+    }
+    xhr.onerror = () => reject(new Error('上传失败'))
+    const formData = new FormData()
+    formData.append('file', file)
+    xhr.send(formData)
+  })
+}
+
+async function performUploadTask(task: UploadTask) {
+  if (!task.file) {
+    updateUploadTask(task, { status: 'failed', error: '文件已失效' })
+    return
+  }
+  const url = getUploadUrlForTask(task)
+  if (!url) {
+    updateUploadTask(task, { status: 'failed', error: '上传目标无效' })
+    return
+  }
+  const token = localStorage.getItem('authToken') || ''
+  updateUploadTask(task, { status: 'uploading', progress: 0, error: undefined })
+  try {
+    await uploadFileWithProgress(url, task.file, token, progress => {
+      updateUploadTask(task, { progress })
+    })
+    updateUploadTask(task, { status: 'success', progress: 100 })
+  } catch (error: any) {
+    updateUploadTask(task, { status: 'failed', error: error?.message || '上传失败' })
+  }
+}
+
 async function uploadFilesWithDirectories(files: UploadItem[], extraDirectories?: Set<string>) {
   const cleanPath = currentPath.value.replace(/^\//, '').replace(/\/$/, '')
-  const errors: Array<{ name: string; error: unknown }> = []
   const ensuredDirs = new Set<string>()
   const token = localStorage.getItem('authToken') || ''
-  let completed = 0
-  let createdDirs = 0
 
   const directories = new Set<string>()
   if (extraDirectories) {
@@ -1354,61 +1510,30 @@ async function uploadFilesWithDirectories(files: UploadItem[], extraDirectories?
     if (relativeDir) directories.add(relativeDir)
   }
 
+  const tasks = files.map(item => createUploadTask(item, { basePath: cleanPath, isShared: false }))
+  addUploadTasks(tasks)
+  if (!showRecycle.value && !showShare.value && !showSharedWithMe.value && !showQuotaManage.value && !showAddressBook.value && !showUploadTasks.value) {
+    enterUploadTasks('files')
+  }
+
   const dirsToCreate = Array.from(directories).filter(Boolean).sort((a, b) => a.split('/').length - b.split('/').length)
   for (const dir of dirsToCreate) {
     const targetDir = cleanPath ? '/' + cleanPath + '/' + dir : '/' + dir
     try {
-      uploadProgress.value = `创建目录: ${dir}`
       await ensureDirectories(targetDir, ensuredDirs, token)
-      createdDirs += 1
     } catch (error) {
-      errors.push({ name: dir, error })
       console.error('创建目录失败:', dir, error)
     }
   }
 
-  for (const item of files) {
-    uploadProgress.value = `上传中 ${completed + 1}/${files.length}: ${item.relativePath}`
-    const targetPath = cleanPath ? '/' + cleanPath + '/' + item.relativePath : '/' + item.relativePath
-    const apiPath = buildApiPath(targetPath)
-    try {
-      const formData = new FormData()
-      formData.append('file', item.file)
-
-      const response = await fetch(apiPath, {
-        method: 'PUT',
-        headers: {
-          'Authorization': `Bearer ${token}`
-        },
-        body: formData
-      })
-
-      if (!response.ok) {
-        throw new Error('上传失败')
-      }
-
-      completed += 1
-    } catch (error) {
-      errors.push({ name: item.relativePath, error })
-      console.error('上传失败:', item.relativePath, error)
-    }
+  for (const task of tasks) {
+    await performUploadTask(task)
   }
 
-  const totalTasks = files.length + dirsToCreate.length
-  const successCount = completed + createdDirs
-
-  if (totalTasks > 0) {
+  if (tasks.length || dirsToCreate.length) {
     // 等待文件完全写入后再刷新列表
     await new Promise(resolve => setTimeout(resolve, 500))
     await fetchFiles(currentPath.value)
-  }
-
-  if (errors.length > 0) {
-    uploadProgress.value = `完成 ${successCount}/${totalTasks}，失败 ${errors.length} 个`
-  } else if (totalTasks > 0) {
-    uploadProgress.value = '上传完成'
-    await nextTick()
-    uploadProgress.value = null
   }
 }
 
@@ -1432,10 +1557,7 @@ async function ensureSharedDirectories(path: string, ensured: Set<string>, share
 async function uploadSharedFilesWithDirectories(files: UploadItem[], extraDirectories?: Set<string>) {
   if (!sharedActive.value) return
   const shareId = sharedActive.value.id
-  const errors: Array<{ name: string; error: unknown }> = []
   const ensuredDirs = new Set<string>()
-  let completed = 0
-  let createdDirs = 0
 
   const directories = new Set<string>()
   if (extraDirectories) {
@@ -1451,61 +1573,71 @@ async function uploadSharedFilesWithDirectories(files: UploadItem[], extraDirect
     if (relativeDir) directories.add(relativeDir)
   }
 
+  const tasks = files.map(item => createUploadTask(item, { basePath: '', isShared: true, shareId }))
+  addUploadTasks(tasks)
+  if (!showUploadTasks.value) {
+    enterUploadTasks('shared')
+  }
+
   const dirsToCreate = Array.from(directories).filter(Boolean).sort((a, b) => a.split('/').length - b.split('/').length)
   for (const dir of dirsToCreate) {
     try {
-      uploadProgress.value = `创建目录: ${dir}`
       await ensureSharedDirectories(dir, ensuredDirs, shareId)
-      createdDirs += 1
     } catch (error) {
-      errors.push({ name: dir, error })
       console.error('创建目录失败:', dir, error)
     }
   }
 
-  const token = localStorage.getItem('authToken') || ''
-  for (const item of files) {
-    uploadProgress.value = `上传中 ${completed + 1}/${files.length}: ${item.relativePath}`
-    const relPath = normalizeRelativePath(item.relativePath || item.file.name)
-    const params = new URLSearchParams({ shareId, path: relPath })
-    const apiPath = buildShareUserUrl('/api/v1/public/share/user/upload', params)
-    try {
-      const formData = new FormData()
-      formData.append('file', item.file)
-
-      const response = await fetch(apiPath, {
-        method: 'PUT',
-        headers: {
-          'Authorization': `Bearer ${token}`
-        },
-        body: formData
-      })
-
-      if (!response.ok) {
-        throw new Error('上传失败')
-      }
-
-      completed += 1
-    } catch (error) {
-      errors.push({ name: item.relativePath, error })
-      console.error('上传失败:', item.relativePath, error)
-    }
+  for (const task of tasks) {
+    await performUploadTask(task)
   }
 
-  const totalTasks = files.length + dirsToCreate.length
-  const successCount = completed + createdDirs
-
-  if (totalTasks > 0) {
+  if (tasks.length || dirsToCreate.length) {
     await new Promise(resolve => setTimeout(resolve, 500))
     await fetchSharedEntries(sharedPath.value)
   }
+}
 
-  if (errors.length > 0) {
-    uploadProgress.value = `完成 ${successCount}/${totalTasks}，失败 ${errors.length} 个`
-  } else if (totalTasks > 0) {
-    uploadProgress.value = '上传完成'
-    await nextTick()
-    uploadProgress.value = null
+async function retryUploadTask(task: UploadTask) {
+  if (task.status === 'uploading') return
+  if (!task.file) {
+    showError('文件已失效，无法重试')
+    return
+  }
+  try {
+    if (task.isShared) {
+      if (!task.shareId) {
+        showError('共享信息已失效，无法重试')
+        return
+      }
+      const relative = normalizeRelativePath(task.sharePath || task.relativePath || task.name)
+      const dir = relative.includes('/') ? relative.slice(0, relative.lastIndexOf('/')) : ''
+      if (dir) {
+        await ensureSharedDirectories(dir, new Set<string>(), task.shareId)
+      }
+    } else {
+      const token = localStorage.getItem('authToken') || ''
+      const targetPath = task.targetPath || buildTargetPath('', task.relativePath || task.name)
+      const dirPath = targetPath.includes('/') ? targetPath.slice(0, targetPath.lastIndexOf('/')) : ''
+      if (dirPath) {
+        await ensureDirectories(dirPath, new Set<string>(), token)
+      }
+    }
+  } catch (error) {
+    console.error('重试创建目录失败:', error)
+  }
+
+  await performUploadTask(task)
+
+  if (task.status !== 'success') return
+  if (task.isShared) {
+    if (showSharedWithMe.value && sharedActive.value?.id === task.shareId) {
+      fetchSharedEntries(sharedPath.value)
+    }
+    return
+  }
+  if (!showRecycle.value && !showShare.value && !showSharedWithMe.value && !showQuotaManage.value && !showAddressBook.value && !showUploadTasks.value) {
+    fetchFiles(currentPath.value)
   }
 }
 
@@ -1666,6 +1798,7 @@ function enterRecycle() {
   showSharedWithMe.value = false
   showQuotaManage.value = false
   showAddressBook.value = false
+  showUploadTasks.value = false
   sharedActive.value = null
   sharedPath.value = '/'
   persistView('recycle')
@@ -1680,6 +1813,7 @@ function enterFiles(path: string = currentPath.value) {
   showSharedWithMe.value = false
   showQuotaManage.value = false
   showAddressBook.value = false
+  showUploadTasks.value = false
   sharedActive.value = null
   sharedPath.value = '/'
   persistView('files')
@@ -1792,6 +1926,7 @@ function enterShare(type: 'link' | 'direct' = shareTab.value) {
   showSharedWithMe.value = false
   showQuotaManage.value = false
   showAddressBook.value = false
+  showUploadTasks.value = false
   sharedActive.value = null
   sharedPath.value = '/'
   shareTab.value = type
@@ -1812,6 +1947,7 @@ function enterSharedWithMe(keepSharedState: boolean | Event = false) {
   showRecycle.value = false
   showQuotaManage.value = false
   showAddressBook.value = false
+  showUploadTasks.value = false
   sharedActive.value = null
   sharedPath.value = '/'
   sharedEntries.value = []
@@ -1955,6 +2091,7 @@ function enterAddressBook() {
   showRecycle.value = false
   showSharedWithMe.value = false
   showQuotaManage.value = false
+  showUploadTasks.value = false
   sharedActive.value = null
   sharedPath.value = '/'
   persistView('addressBook')
@@ -1969,10 +2106,44 @@ function enterQuotaManage() {
   showRecycle.value = false
   showSharedWithMe.value = false
   showAddressBook.value = false
+  showUploadTasks.value = false
   sharedActive.value = null
   sharedPath.value = '/'
   persistView('quotaManage')
   fetchUserCenter()
+}
+
+function enterUploadTasks(source?: 'files' | 'shared') {
+  const resolved = source || (showSharedWithMe.value ? 'shared' : 'files')
+  if (resolved === 'shared') {
+    uploadTasksReturnView.value = 'sharedWithMe'
+    if (sharedActive.value) {
+      persistSharedState()
+    } else {
+      clearSharedState()
+    }
+  } else {
+    uploadTasksReturnView.value = 'files'
+    uploadTasksReturnPath.value = currentPath.value
+  }
+  detailDrawerVisible.value = false
+  showUploadTasks.value = true
+  showShare.value = false
+  showRecycle.value = false
+  showSharedWithMe.value = false
+  showQuotaManage.value = false
+  showAddressBook.value = false
+  persistView('uploadTasks')
+}
+
+async function exitUploadTasks() {
+  const returnView = uploadTasksReturnView.value
+  uploadTasksReturnView.value = null
+  if (returnView === 'sharedWithMe') {
+    await restoreSharedWithMeView()
+    return
+  }
+  enterFiles(uploadTasksReturnPath.value || currentPath.value)
 }
 
 function openCreateFolderDialog(mode: 'file' | 'shared') {
@@ -2171,6 +2342,7 @@ async function restoreSharedWithMeView() {
   showRecycle.value = false
   showQuotaManage.value = false
   showAddressBook.value = false
+  showUploadTasks.value = false
   sharedActive.value = null
   sharedEntries.value = []
   const storedShareId = localStorage.getItem(SHARED_ACTIVE_STORAGE_KEY)
@@ -2213,6 +2385,10 @@ async function restoreView() {
   }
   if (storedView === 'addressBook') {
     enterAddressBook()
+    return
+  }
+  if (storedView === 'uploadTasks') {
+    enterUploadTasks()
     return
   }
   const storedPath = localStorage.getItem(FILE_PATH_STORAGE_KEY) || '/'
@@ -2261,6 +2437,10 @@ function handleExternalNavigate(event: Event) {
     enterAddressBook()
     return
   }
+  if (view === 'uploadTasks') {
+    enterUploadTasks()
+    return
+  }
 }
 
 onMounted(() => {
@@ -2276,10 +2456,52 @@ onBeforeUnmount(() => {
   <div class="home-container">
     <!-- 未登录状态 -->
     <div v-if="!isLoggedIn()" class="login-page">
-      <div class="login-hint">
-        请点击右上角“连接钱包”进行登录
+      <div class="login-card">
+        <div class="login-section">
+          <el-button
+            v-if="hasWallet()"
+            type="primary"
+            @click="handleWalletLogin"
+          >
+            钱包登陆
+          </el-button>
+          <div v-else class="login-warning">未检测到钱包插件</div>
+        </div>
+        <div class="login-divider">或</div>
+        <div class="login-section">
+          <el-button type="primary" @click="showPasswordLoginForm = !showPasswordLoginForm">
+            密码登陆
+          </el-button>
+          <div class="login-form-shell" :class="{ 'is-collapsed': !showPasswordLoginForm }">
+            <el-form class="login-form" @submit.prevent="handlePasswordLogin">
+              <el-form-item>
+                <el-input
+                  v-model="passwordLoginForm.username"
+                  placeholder="用户名"
+                  autocomplete="username"
+                />
+              </el-form-item>
+              <el-form-item>
+                <el-input
+                  v-model="passwordLoginForm.password"
+                  type="password"
+                  show-password
+                  placeholder="密码"
+                  autocomplete="current-password"
+                />
+              </el-form-item>
+              <el-button
+                type="primary"
+                native-type="submit"
+                :loading="loginSubmitting"
+                class="login-submit"
+              >
+                登录
+              </el-button>
+            </el-form>
+          </div>
+        </div>
       </div>
-      <div v-if="!hasWallet()" class="login-warning">未检测到钱包插件</div>
     </div>
 
     <!-- 已登录状态 -->
@@ -2297,7 +2519,7 @@ onBeforeUnmount(() => {
             <button
               type="button"
               class="nav-item"
-              :class="{ active: !showRecycle && !showShare && !showQuotaManage && !showSharedWithMe && !showAddressBook }"
+              :class="{ active: !showRecycle && !showShare && !showQuotaManage && !showSharedWithMe && !showAddressBook && !showUploadTasks }"
               @click="backToFiles"
             >
               <el-icon class="nav-icon"><FolderOpened /></el-icon>
@@ -2365,9 +2587,9 @@ onBeforeUnmount(() => {
                   <el-button circle :icon="ArrowUp" @click="goSharedParent" :disabled="sharedPath === '/'" />
                 </el-tooltip>
               </template>
-              <template v-else-if="showRecycle || showShare || showSharedWithMe">
-                <el-tooltip content="返回文件列表" placement="top">
-                  <el-button circle :icon="ArrowLeft" @click="backToFiles" />
+              <template v-else-if="showRecycle || showShare || showSharedWithMe || showUploadTasks">
+                <el-tooltip :content="showUploadTasks ? '返回上一页' : '返回文件列表'" placement="top">
+                  <el-button circle :icon="ArrowLeft" @click="showUploadTasks ? exitUploadTasks() : backToFiles()" />
                 </el-tooltip>
               </template>
               <template v-else>
@@ -2421,6 +2643,12 @@ onBeforeUnmount(() => {
                     </div>
                   </template>
                 </template>
+                <template v-else-if="showUploadTasks">
+                  <div class="path-pill">
+                    <span class="path-label">当前位置</span>
+                    <span class="path-value">上传任务</span>
+                  </div>
+                </template>
                 <template v-else>
                   <div class="breadcrumb">
                     <el-breadcrumb separator="/">
@@ -2454,8 +2682,18 @@ onBeforeUnmount(() => {
                   </template>
                 </el-input>
               </div>
+              <el-tooltip v-if="showListHeader && singleRefreshAction" content="刷新" placement="top">
+                <el-button
+                  class="mobile-only"
+                  circle
+                  :icon="Refresh"
+                  :loading="singleRefreshAction?.disabled"
+                  :disabled="singleRefreshAction?.disabled"
+                  @click="refreshCurrentView"
+                />
+              </el-tooltip>
               <el-dropdown
-                v-if="showListHeader && hasMobileActions"
+                v-if="showListHeader && showMobileMenu"
                 class="mobile-only mobile-menu-button"
                 trigger="click"
                 @command="handleMobileAction"
@@ -2463,21 +2701,19 @@ onBeforeUnmount(() => {
                 <el-button circle :icon="MoreFilled" />
                 <template #dropdown>
                   <el-dropdown-menu>
-                    <template v-for="(group, index) in mobileActionGroups" :key="group.title">
+                    <template v-for="(group, groupIndex) in mobileActionGroups" :key="group.title">
                       <el-dropdown-item
-                        class="mobile-menu-group"
-                        disabled
-                        :divided="index > 0"
-                      >
-                        {{ group.title }}
-                      </el-dropdown-item>
-                      <el-dropdown-item
-                        v-for="item in group.items"
+                        v-for="(item, itemIndex) in group.items"
                         :key="item.command"
                         :command="item.command"
                         :disabled="item.disabled"
+                        :divided="groupIndex > 0 && itemIndex === 0"
+                        class="mobile-menu-item"
+                        :title="item.label"
                       >
-                        {{ item.label }}
+                        <el-icon>
+                          <component :is="getMobileActionIcon(item.command)" />
+                        </el-icon>
                       </el-dropdown-item>
                     </template>
                   </el-dropdown-menu>
@@ -2543,6 +2779,8 @@ onBeforeUnmount(() => {
                       </el-button>
                     </el-tooltip>
                   </template>
+                </template>
+                <template v-else-if="showUploadTasks">
                 </template>
                 <template v-else>
                   <el-tooltip content="新建文件夹" placement="top">
@@ -2703,6 +2941,14 @@ onBeforeUnmount(() => {
           <div v-else-if="showAddressBook" class="content-body content-scroll" v-loading="addressBookLoading">
             <AddressBookView />
           </div>
+          <div v-else-if="showUploadTasks" class="content-body table-wrapper">
+            <UploadTaskListView
+              :tasks="uploadTasks"
+              :format-size="formatSize"
+              :format-time="formatTime"
+              :retry-task="retryUploadTask"
+            />
+          </div>
           <div v-else class="content-body table-wrapper">
             <RecycleTableView
               v-if="showRecycle"
@@ -2766,10 +3012,6 @@ onBeforeUnmount(() => {
           </div>
         </section>
 
-        <!-- 上传进度 -->
-        <div v-if="uploadProgress" class="upload-tip">
-          {{ uploadProgress }}
-        </div>
       </main>
 
       <HomeOverlays
@@ -2846,7 +3088,7 @@ onBeforeUnmount(() => {
         <button
           type="button"
           class="mobile-nav-item"
-          :class="{ active: !showRecycle && !showShare && !showQuotaManage && !showSharedWithMe && !showAddressBook }"
+          :class="{ active: !showRecycle && !showShare && !showQuotaManage && !showSharedWithMe && !showAddressBook && !showUploadTasks }"
           @click="backToFiles"
         >
           <el-icon><FolderOpened /></el-icon>
@@ -2903,22 +3145,64 @@ onBeforeUnmount(() => {
 
 .login-page {
   display: flex;
-  justify-content: center;
+  justify-content: flex-start;
   align-items: center;
   height: 100%;
   flex-direction: column;
-  gap: 8px;
+  gap: 16px;
   color: #606266;
   font-size: 16px;
-}
-
-.login-hint {
-  font-weight: 500;
+  padding-top: clamp(48px, 18vh, 180px);
 }
 
 .login-warning {
   color: #e6a23c;
   font-size: 14px;
+}
+
+.login-card {
+  width: min(520px, 92vw);
+  background: #fff;
+  border: 1px solid #eef1f4;
+  border-radius: 16px;
+  padding: 20px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.08);
+}
+
+.login-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.login-divider {
+  color: #c0c4cc;
+  font-size: 12px;
+  text-align: center;
+}
+
+.login-form :deep(.el-form-item) {
+  margin-bottom: 12px;
+}
+
+.login-submit {
+  width: 100%;
+}
+
+.login-form-shell {
+  overflow: hidden;
+  max-height: 300px;
+  opacity: 1;
+  transition: max-height 0.25s ease, opacity 0.2s ease;
+}
+
+.login-form-shell.is-collapsed {
+  max-height: 0;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .app-shell {
@@ -3204,16 +3488,6 @@ onBeforeUnmount(() => {
   color: #1f2d3d;
   font-size: 14px;
   box-shadow: 0 8px 16px rgba(15, 23, 42, 0.08);
-}
-
-.upload-tip {
-  align-self: flex-start;
-  padding: 8px 16px;
-  background: #ecf9f1;
-  border: 1px solid #d3f1df;
-  border-radius: 10px;
-  color: #2f8f5b;
-  font-size: 13px;
 }
 
 .user-center {

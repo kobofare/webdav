@@ -22,13 +22,13 @@
   }
 
   .container_box {
-    height: auto !important;
+    height: 100vh !important;
     min-height: 100vh !important;
   }
 
   .container_box .el-container {
-    height: auto !important;
-    min-height: 100% !important;
+    height: 100% !important;
+    min-height: 0 !important;
   }
 
   .container_box .el-header {
@@ -38,7 +38,15 @@
 
   .container_box .el-main {
     padding: 8px !important;
-    overflow: auto !important;
+    overflow: hidden !important;
+    display: flex !important;
+    flex-direction: column !important;
+    min-height: 0 !important;
+  }
+
+  .container_box .el-main > * {
+    flex: 1 !important;
+    min-height: 0 !important;
   }
 
   .myHeader {
@@ -66,18 +74,21 @@
   }
 
   .home-container {
-    height: auto !important;
-    min-height: 100% !important;
-    overflow: visible !important;
+    height: 100% !important;
+    min-height: 0 !important;
+    overflow: hidden !important;
+    display: flex !important;
+    flex-direction: column !important;
   }
 
   .home-container .app-shell {
     grid-template-columns: 1fr !important;
-    height: auto !important;
-    min-height: 100% !important;
+    height: 100% !important;
+    min-height: 0 !important;
     padding: 8px !important;
     padding-bottom: calc(72px + env(safe-area-inset-bottom)) !important;
     gap: 12px !important;
+    flex: 1 !important;
   }
 
   .home-container .side-panel {
@@ -106,15 +117,16 @@
   }
 
   .home-container .main-panel {
-    min-height: auto !important;
-    height: auto !important;
-    overflow: visible !important;
+    min-height: 0 !important;
+    height: 100% !important;
+    overflow: hidden !important;
   }
 
   .home-container .content-card {
     padding: 6px !important;
     border-radius: 12px !important;
-    overflow: visible !important;
+    height: 100% !important;
+    overflow: hidden !important;
   }
 
   .home-container .list-header {
@@ -146,16 +158,33 @@
   }
 
   .home-container .table-wrapper {
-    overflow: visible !important;
+    overflow: auto !important;
+    -webkit-overflow-scrolling: touch;
   }
 
   .home-container .content-scroll {
-    overflow: visible !important;
+    overflow: auto !important;
+    -webkit-overflow-scrolling: touch;
   }
 
   .home-container .content-body {
-    overflow: visible !important;
-    flex: none !important;
+    overflow: hidden !important;
+    flex: 1 !important;
+    min-height: 0 !important;
+  }
+
+  .home-container .content-body.content-scroll,
+  .home-container .content-body.table-wrapper {
+    overflow: auto !important;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+
+  .home-container .content-body.content-scroll::-webkit-scrollbar,
+  .home-container .content-body.table-wrapper::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+    display: none;
   }
 
   .home-container .drop-mask {
@@ -297,6 +326,11 @@
     color: #909399;
     cursor: default;
     pointer-events: none;
+  }
+
+  .mobile-menu-item {
+    justify-content: center;
+    gap: 0;
   }
 
   .mobile-nav-item {

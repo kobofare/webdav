@@ -11,6 +11,25 @@ export interface UploadItem {
   relativePath: string
 }
 
+export type UploadTaskStatus = 'queued' | 'uploading' | 'success' | 'failed'
+
+export type UploadTask = {
+  id: string
+  name: string
+  relativePath: string
+  size: number
+  status: UploadTaskStatus
+  progress: number
+  error?: string
+  createdAt: number
+  updatedAt: number
+  file?: File
+  targetPath?: string
+  isShared: boolean
+  shareId?: string
+  sharePath?: string
+}
+
 export type DropEntry = {
   isFile: boolean
   isDirectory: boolean
