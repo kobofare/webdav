@@ -8,6 +8,9 @@ import { shortenAddress } from '@/utils/address'
 import type { AddressContact } from '@/api'
 
 const addressBookStore = useAddressBookStore()
+const emit = defineEmits<{
+  (event: 'refresh'): void
+}>()
 const {
   addressGroups,
   addressGroupCounts,
@@ -59,11 +62,13 @@ function copyContactAddress(contact: AddressContact) {
         <div class="address-title">地址簿</div>
         <el-tooltip content="刷新" placement="top">
           <el-button
+            class="refresh-button"
             circle
             size="small"
             :icon="Refresh"
-            :loading="addressBookLoading"
-            @click="addressBookStore.fetchAddressBook()"
+            :disabled="addressBookLoading"
+            :class="{ 'is-refreshing': addressBookLoading }"
+            @click="emit('refresh')"
           />
         </el-tooltip>
       </div>

@@ -1,7 +1,9 @@
-import { getProvider, requestAccounts, loginWithChallenge, logout as sdkLogout, clearAccessToken, getAccessToken, setAccessToken } from '@yeying-community/web3-bs'
+import { getProvider, requestAccounts, loginWithChallenge, logout as sdkLogout, clearAccessToken, getAccessToken, setAccessToken, watchAccounts } from '@yeying-community/web3-bs'
 
 const API_BASE = import.meta.env.VITE_API_BASE || ''
 const AUTH_BASE = API_BASE ? `${API_BASE.replace(/\/+$/, '')}/api/v1/public/auth` : '/api/v1/public/auth'
+const ACCOUNT_HISTORY_KEY = 'webdav:accountHistory'
+const ACCOUNT_CHANGED_KEY = 'webdav:accountChanged'
 
 // 钱包 Provider 类型
 interface WalletProvider {
@@ -96,19 +98,91 @@ export function getCurrentAccount(): string | null {
   return localStorage.getItem('currentAccount')
 }
 
+function normalizeAddress(address: string): string {
+  return address.trim().toLowerCase()
+}
+
+function isWalletAddress(address: string): boolean {
+  return /^0x[a-fA-F0-9]{40}$/.test(address.trim())
+}
+
+function readAccountHistory(): string[] {
+  const stored = localStorage.getItem(ACCOUNT_HISTORY_KEY)
+  if (!stored) return []
+  try {
+    const parsed = JSON.parse(stored)
+    if (Array.isArray(parsed)) {
+      return parsed.map(item => String(item)).filter(isWalletAddress)
+    }
+  } catch {
+    // ignore
+  }
+  return []
+}
+
+function writeAccountHistory(accounts: string[]): void {
+  localStorage.setItem(ACCOUNT_HISTORY_KEY, JSON.stringify(accounts))
+}
+
+export function getAccountHistory(): string[] {
+  return readAccountHistory()
+}
+
+function rememberAccount(address: string): void {
+  if (!isWalletAddress(address)) return
+  const normalized = normalizeAddress(address)
+  const history = readAccountHistory().map(normalizeAddress)
+  const next = [normalized, ...history.filter(item => item !== normalized)]
+  writeAccountHistory(next.slice(0, 10))
+}
+
+export function markAccountChanged(address: string): void {
+  if (!isWalletAddress(address)) return
+  localStorage.setItem(ACCOUNT_CHANGED_KEY, normalizeAddress(address))
+}
+
+export function consumeAccountChanged(): string | null {
+  const stored = localStorage.getItem(ACCOUNT_CHANGED_KEY)
+  if (!stored) return null
+  localStorage.removeItem(ACCOUNT_CHANGED_KEY)
+  return stored
+}
+
+export async function watchWalletAccounts(handler: (payload: { account: string | null; accounts: string[] }) => void): Promise<() => void> {
+  const provider = await getProvider()
+  if (!provider) {
+    return () => {}
+  }
+  return watchAccounts(provider, ({ account, accounts }) => {
+    if (account) {
+      rememberAccount(account)
+    }
+    handler({ account: account || null, accounts })
+  })
+}
+
 // 钱包登录流程
-export async function loginWithWallet(): Promise<void> {
+export async function loginWithWallet(preferredAccount?: string): Promise<void> {
   const provider = await getProvider()
   if (!provider) {
     throw new Error('未检测到钱包')
   }
 
   const accounts = await requestAccounts({ provider })
-  const address = accounts[0]
+  let address = accounts[0]
+  if (preferredAccount) {
+    const normalized = normalizeAddress(preferredAccount)
+    const match = accounts.find(item => normalizeAddress(item) === normalized)
+    if (!match) {
+      throw new Error('请在钱包中切换到选中的账户')
+    }
+    address = match
+  }
   if (!address) return
 
   localStorage.setItem('currentAccount', address)
   localStorage.setItem('walletAddress', address)
+  rememberAccount(address)
 
   try {
     const result = await loginWithChallenge({
@@ -158,6 +232,7 @@ export async function loginWithPassword(username: string, password: string): Pro
   if (data.address) {
     localStorage.setItem('currentAccount', data.address)
     localStorage.setItem('walletAddress', data.address)
+    rememberAccount(data.address)
   } else {
     localStorage.setItem('currentAccount', username)
   }

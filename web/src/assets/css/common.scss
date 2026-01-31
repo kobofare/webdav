@@ -100,6 +100,26 @@ ul li {
   max-width: 260px;
 }
 
+.refresh-button {
+  .el-icon {
+    transform-origin: 50% 50%;
+    transition: transform 0.2s ease;
+    will-change: transform;
+  }
+
+  &.is-refreshing {
+    .el-icon {
+      animation: webdav-refresh-spin 0.9s linear infinite;
+    }
+  }
+}
+
+@keyframes webdav-refresh-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 // 操作和下拉列表
 .operate_list_ul {
   li {

@@ -39,7 +39,7 @@ web3:
   refresh_token_expiration: 720h
   ucan:
     enabled: false
-    audience: "did:web:localhost:6065"
+    audience: "did:web:127.0.0.1:6065"
     required_resource: "profile"
     required_action: "read"
 

@@ -1,12 +1,13 @@
 <script lang="ts" setup>
 import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { Notebook, SwitchButton, User, Wallet, Upload } from '@element-plus/icons-vue'
-import { isLoggedIn, getCurrentAccount, logout, hasWallet, loginWithWallet, getWalletName } from '@/plugins/auth'
+import { isLoggedIn, getCurrentAccount, logout, hasWallet, loginWithWallet, getWalletName, watchWalletAccounts, markAccountChanged } from '@/plugins/auth'
 
 const isAuth = ref(false)
 const account = ref<string | null>(null)
 const walletInfo = ref({ present: false, name: '' })
 const activeView = ref<string | null>(localStorage.getItem('webdav:lastView'))
+let stopAccountWatch: (() => void) | null = null
 
 onMounted(() => {
   isAuth.value = isLoggedIn()
@@ -15,6 +16,21 @@ onMounted(() => {
     present: hasWallet(),
     name: getWalletName()
   }
+})
+
+onMounted(() => {
+  void (async () => {
+    stopAccountWatch = await watchWalletAccounts(({ account: next }) => {
+      if (!next) return
+      const current = account.value?.toLowerCase()
+      if (current && current !== next.toLowerCase() && isAuth.value) {
+        markAccountChanged(next)
+        logout()
+        return
+      }
+      account.value = next
+    })
+  })()
 })
 
 async function handleConnect() {
@@ -68,6 +84,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('webdav:view-changed', handleViewChanged as EventListener)
+  stopAccountWatch?.()
 })
 </script>
 

@@ -32,6 +32,7 @@ export default defineConfig(({ command, mode }) => {
       outDir: VITE_ENV_BASE_URL,
       sourcemap: !isProd,
       rollupOptions: {
+        maxParallelFileOps: 8,
         output: {
           chunkFileNames: 'static/js/[name]-[hash].js',
           entryFileNames: 'static/js/[name]-[hash].js',

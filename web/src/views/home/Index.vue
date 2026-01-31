@@ -4,7 +4,7 @@ import { storeToRefs } from 'pinia'
 import { ArrowLeft, ArrowUp, Delete, FolderAdd, FolderOpened, Refresh, Upload, DocumentCopy, Share, UserFilled, Search, MoreFilled } from '@element-plus/icons-vue'
 import { ElMessageBox } from 'element-plus'
 import { quotaApi, userApi, recycleApi, shareApi, directShareApi, type RecycleItem, type ShareItem, type DirectShareItem } from '@/api'
-import { isLoggedIn, hasWallet, getUsername, getWalletName, getCurrentAccount, getUserPermissions, getUserCreatedAt, loginWithWallet, loginWithPassword } from '@/plugins/auth'
+import { isLoggedIn, hasWallet, getUsername, getWalletName, getCurrentAccount, getUserPermissions, getUserCreatedAt, loginWithWallet, loginWithPassword, getAccountHistory, watchWalletAccounts, consumeAccountChanged } from '@/plugins/auth'
 import { parsePropfindResponse } from '@/utils/webdav'
 import { copyText } from '@/utils/clipboard'
 import { shortenAddress } from '@/utils/address'
@@ -41,11 +41,15 @@ const passwordLoginForm = ref({
   username: '',
   password: ''
 })
+const walletHistory = ref<string[]>([])
+const selectedWalletAccount = ref('')
+let stopAccountWatch: (() => void) | null = null
 
 // 回收站相关状态
 const showRecycle = ref(false)
 const recycleList = ref<RecycleItem[]>([])
 const recycleLoading = ref(false)
+const recycleClearing = ref(false)
 const showShare = ref(false)
 const shareList = ref<ShareItem[]>([])
 const shareLoading = ref(false)
@@ -65,6 +69,7 @@ const showAddressBook = ref(false)
 const showUploadTasks = ref(false)
 const uploadTasksReturnView = ref<ViewKey | null>(null)
 const uploadTasksReturnPath = ref('/')
+const manualRefresh = ref(false)
 const detailDrawerVisible = ref(false)
 const detailMode = ref<'file' | 'recycle' | 'share' | 'directShare' | 'receivedShare' | 'sharedEntry' | null>(null)
 const detailItem = ref<FileItem | RecycleItem | ShareItem | DirectShareItem | null>(null)
@@ -161,13 +166,13 @@ const mobileActionGroups = computed<MobileActionGroup[]>(() => {
       {
         title: '回收站',
         items: [
-          { command: 'clearRecycle', label: '清空回收站', disabled: recycleLoading.value }
+          { command: 'clearRecycle', label: '清空回收站', disabled: recycleLoading.value || recycleClearing.value }
         ]
       },
       {
         title: '列表',
         items: [
-          { command: 'refresh', label: '刷新', disabled: recycleLoading.value }
+          { command: 'refresh', label: '刷新', disabled: recycleLoading.value || recycleClearing.value }
         ]
       }
     ]
@@ -490,7 +495,8 @@ function showError(message: string, title = '错误'): void {
 
 async function handleWalletLogin() {
   try {
-    await loginWithWallet()
+    const preferred = selectedWalletAccount.value.trim()
+    await loginWithWallet(preferred || undefined)
     window.location.reload()
   } catch (error: any) {
     showError(error?.message || '钱包登录失败')
@@ -926,29 +932,33 @@ function handleRowClick(row: FileItem | RecycleItem | ShareItem | DirectShareIte
 }
 
 // 刷新当前视图
-function refreshCurrentView() {
-  if (showRecycle.value) {
-    fetchRecycle()
-  } else if (showShare.value) {
-    if (shareTab.value === 'link') {
-      fetchShare()
+async function refreshCurrentView() {
+  if (showUploadTasks.value || manualRefresh.value) return
+  manualRefresh.value = true
+  try {
+    if (showRecycle.value) {
+      await fetchRecycle()
+    } else if (showShare.value) {
+      if (shareTab.value === 'link') {
+        await fetchShare()
+      } else {
+        await fetchDirectShareList()
+      }
+    } else if (showSharedWithMe.value) {
+      if (sharedActive.value) {
+        await fetchSharedEntries(sharedPath.value)
+      } else {
+        await fetchSharedWithMe()
+      }
+    } else if (showQuotaManage.value) {
+      await fetchUserCenter()
+    } else if (showAddressBook.value) {
+      await addressBookStore.fetchAddressBook()
     } else {
-      fetchDirectShareList()
+      await fetchFiles(currentPath.value)
     }
-  } else if (showSharedWithMe.value) {
-    if (sharedActive.value) {
-      fetchSharedEntries(sharedPath.value)
-    } else {
-      fetchSharedWithMe()
-    }
-  } else if (showQuotaManage.value) {
-    fetchUserCenter()
-  } else if (showAddressBook.value) {
-    addressBookStore.fetchAddressBook()
-  } else if (showUploadTasks.value) {
-    return
-  } else {
-    fetchFiles(currentPath.value)
+  } finally {
+    manualRefresh.value = false
   }
 }
 
@@ -1863,16 +1873,16 @@ async function clearRecycle() {
     return
   }
   if (!(await confirmAction('确定清空回收站吗？此操作不可恢复！', '清空回收站'))) return
-  recycleLoading.value = true
+  recycleClearing.value = true
   try {
     await recycleApi.clear()
     showSuccess('回收站已清空')
-    fetchRecycle()
+    await fetchRecycle()
   } catch (error) {
     console.error('清空回收站失败:', error)
     showError('清空回收站失败')
   } finally {
-    recycleLoading.value = false
+    recycleClearing.value = false
   }
 }
 
@@ -2461,6 +2471,34 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener('webdav:navigate', handleExternalNavigate as EventListener)
 })
+
+function syncWalletHistory(next?: string) {
+  walletHistory.value = getAccountHistory()
+  if (next) {
+    selectedWalletAccount.value = next
+    return
+  }
+  if (!selectedWalletAccount.value && walletHistory.value.length > 0) {
+    selectedWalletAccount.value = walletHistory.value[0]
+  }
+}
+
+onMounted(() => {
+  const changed = consumeAccountChanged()
+  if (changed) {
+    showInfo('钱包账户已切换，请重新登录')
+  }
+  syncWalletHistory()
+  void (async () => {
+    stopAccountWatch = await watchWalletAccounts(({ account }) => {
+      syncWalletHistory(account || undefined)
+    })
+  })()
+})
+
+onBeforeUnmount(() => {
+  stopAccountWatch?.()
+})
 </script>
 
 <template>
@@ -2477,6 +2515,23 @@ onBeforeUnmount(() => {
             钱包登陆
           </el-button>
           <div v-else class="login-warning">未检测到钱包插件</div>
+          <div v-if="hasWallet() && walletHistory.length" class="login-history">
+            <div class="login-history-title">选择历史账户</div>
+            <el-select
+              v-model="selectedWalletAccount"
+              placeholder="选择历史账户"
+              class="login-history-select"
+            >
+              <el-option
+                v-for="accountItem in walletHistory"
+                :key="accountItem"
+                :value="accountItem"
+                :label="shortenAddress(accountItem)"
+              >
+                <span class="mono">{{ accountItem }}</span>
+              </el-option>
+            </el-select>
+          </div>
         </div>
         <div class="login-divider">或</div>
         <div class="login-section">
@@ -2695,11 +2750,11 @@ onBeforeUnmount(() => {
               </div>
               <el-tooltip v-if="showListHeader && singleRefreshAction" content="刷新" placement="top">
                 <el-button
-                  class="mobile-only"
+                  class="mobile-only refresh-button"
                   circle
                   :icon="Refresh"
-                  :loading="singleRefreshAction?.disabled"
                   :disabled="singleRefreshAction?.disabled"
+                  :class="{ 'is-refreshing': singleRefreshAction?.disabled }"
                   @click="refreshCurrentView"
                 />
               </el-tooltip>
@@ -2733,19 +2788,37 @@ onBeforeUnmount(() => {
               <div class="list-actions desktop-only">
                 <template v-if="showRecycle">
                   <el-tooltip content="清空回收站" placement="top">
-                    <el-button type="danger" circle @click="clearRecycle" :loading="recycleLoading">
+                    <el-button
+                      type="danger"
+                      circle
+                      :loading="recycleClearing"
+                      :disabled="recycleLoading || recycleClearing"
+                      @click="clearRecycle"
+                    >
                       <el-icon><Delete /></el-icon>
                     </el-button>
                   </el-tooltip>
                   <el-tooltip content="刷新" placement="top">
-                    <el-button circle @click="refreshCurrentView" :loading="recycleLoading">
+                    <el-button
+                      class="refresh-button"
+                      circle
+                      :disabled="recycleLoading || recycleClearing"
+                      :class="{ 'is-refreshing': recycleLoading }"
+                      @click="refreshCurrentView"
+                    >
                       <el-icon><Refresh /></el-icon>
                     </el-button>
                   </el-tooltip>
                 </template>
                 <template v-else-if="showShare">
                   <el-tooltip content="刷新" placement="top">
-                    <el-button circle @click="refreshCurrentView" :loading="shareTab === 'link' ? shareLoading : directShareLoading">
+                    <el-button
+                      class="refresh-button"
+                      circle
+                      :disabled="shareTab === 'link' ? shareLoading : directShareLoading"
+                      :class="{ 'is-refreshing': shareTab === 'link' ? shareLoading : directShareLoading }"
+                      @click="refreshCurrentView"
+                    >
                       <el-icon><Refresh /></el-icon>
                     </el-button>
                   </el-tooltip>
@@ -2762,7 +2835,13 @@ onBeforeUnmount(() => {
                       <el-button circle type="primary" :icon="FolderOpened" @click="triggerDirectoryUpload" />
                     </el-tooltip>
                     <el-tooltip content="刷新" placement="top">
-                      <el-button circle @click="refreshCurrentView" :loading="sharedEntriesLoading">
+                      <el-button
+                        class="refresh-button"
+                        circle
+                        :disabled="sharedEntriesLoading"
+                        :class="{ 'is-refreshing': sharedEntriesLoading }"
+                        @click="refreshCurrentView"
+                      >
                         <el-icon><Refresh /></el-icon>
                       </el-button>
                     </el-tooltip>
@@ -2785,7 +2864,13 @@ onBeforeUnmount(() => {
                   </template>
                   <template v-else>
                     <el-tooltip content="刷新" placement="top">
-                      <el-button circle @click="refreshCurrentView" :loading="sharedWithMeLoading">
+                      <el-button
+                        class="refresh-button"
+                        circle
+                        :disabled="sharedWithMeLoading"
+                        :class="{ 'is-refreshing': sharedWithMeLoading }"
+                        @click="refreshCurrentView"
+                      >
                         <el-icon><Refresh /></el-icon>
                       </el-button>
                     </el-tooltip>
@@ -2804,7 +2889,13 @@ onBeforeUnmount(() => {
                     <el-button circle type="primary" :icon="FolderOpened" @click="triggerDirectoryUpload" />
                   </el-tooltip>
                   <el-tooltip content="刷新" placement="top">
-                    <el-button circle @click="refreshCurrentView" :loading="loading">
+                    <el-button
+                      class="refresh-button"
+                      circle
+                      :disabled="loading"
+                      :class="{ 'is-refreshing': loading }"
+                      @click="refreshCurrentView"
+                    >
                       <el-icon><Refresh /></el-icon>
                     </el-button>
                   </el-tooltip>
@@ -2828,13 +2919,21 @@ onBeforeUnmount(() => {
               </div>
             </div>
           </div>
-          <div v-if="showQuotaManage" class="content-body content-scroll" v-loading="quotaManageLoading">
+          <div v-if="showQuotaManage" class="content-body content-scroll" v-loading="quotaManageLoading && !manualRefresh">
             <div class="user-center">
               <div class="user-card">
                 <div class="card-head">
                   <div class="card-title">基础信息</div>
                   <el-tooltip content="刷新" placement="top">
-                    <el-button circle size="small" :icon="Refresh" @click="refreshCurrentView" :loading="quotaManageLoading" />
+                    <el-button
+                      class="refresh-button"
+                      circle
+                      size="small"
+                      :icon="Refresh"
+                      :disabled="quotaManageLoading"
+                      :class="{ 'is-refreshing': quotaManageLoading }"
+                      @click="refreshCurrentView"
+                    />
                   </el-tooltip>
                 </div>
                 <div class="user-list">
@@ -2949,8 +3048,8 @@ onBeforeUnmount(() => {
               </div>
             </div>
           </div>
-          <div v-else-if="showAddressBook" class="content-body content-scroll" v-loading="addressBookLoading">
-            <AddressBookView />
+          <div v-else-if="showAddressBook" class="content-body content-scroll" v-loading="addressBookLoading && !manualRefresh">
+            <AddressBookView @refresh="refreshCurrentView" />
           </div>
           <div v-else-if="showUploadTasks" class="content-body table-wrapper">
             <UploadTaskListView
@@ -2964,7 +3063,7 @@ onBeforeUnmount(() => {
             <RecycleTableView
               v-if="showRecycle"
               :rows="filteredRecycleList"
-              :loading="recycleLoading"
+              :loading="recycleLoading && !manualRefresh"
               :on-row-click="handleRowClick"
               :format-recycle-full-path="formatRecycleFullPath"
               :format-recycle-location="formatRecycleLocation"
@@ -2978,7 +3077,7 @@ onBeforeUnmount(() => {
               :share-tab="shareTab"
               :share-list="filteredShareList"
               :direct-share-list="filteredDirectShareList"
-              :loading="shareTab === 'link' ? shareLoading : directShareLoading"
+              :loading="(shareTab === 'link' ? shareLoading : directShareLoading) && !manualRefresh"
               :on-row-click="handleRowClick"
               :copy-share-link="copyShareLink"
               :revoke-share="revokeShare"
@@ -2991,7 +3090,7 @@ onBeforeUnmount(() => {
               :shared-active="sharedActive"
               :shared-with-me-list="filteredSharedWithMeList"
               :shared-entries="filteredSharedEntries"
-              :loading="sharedActive ? sharedEntriesLoading : sharedWithMeLoading"
+              :loading="(sharedActive ? sharedEntriesLoading : sharedWithMeLoading) && !manualRefresh"
               :on-row-click="handleRowClick"
               :format-time="formatTime"
               :format-size="formatSize"
@@ -3009,7 +3108,7 @@ onBeforeUnmount(() => {
             <FileTableView
               v-else
               :rows="filteredFileList"
-              :loading="loading"
+              :loading="loading && !manualRefresh"
               :on-row-click="handleRowClick"
               :format-size="formatSize"
               :format-time="formatTime"
@@ -3187,6 +3286,21 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.login-history {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.login-history-title {
+  font-size: 13px;
+  color: #909399;
+}
+
+.login-history-select {
+  width: 100%;
 }
 
 .login-divider {
