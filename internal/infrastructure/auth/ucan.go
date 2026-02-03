@@ -106,6 +106,14 @@ func (v *UcanVerifier) VerifyInvocation(token string) (string, error) {
 		return "", fmt.Errorf("UCAN audience mismatch")
 	}
 	if len(v.requiredCaps) > 0 && !capsAllow(payload.Cap, v.requiredCaps) {
+		if v.logger != nil {
+			v.logger.Warn("ucan capability denied",
+				zap.String("required_caps", formatCaps(v.requiredCaps)),
+				zap.String("provided_caps", formatCaps(payload.Cap)),
+				zap.String("audience", payload.Aud),
+				zap.String("issuer", payload.Iss),
+			)
+		}
 		return "", fmt.Errorf("UCAN capability denied")
 	}
 
@@ -137,6 +145,25 @@ func BuildRequiredUcanCaps(resource, action string) []UcanCapability {
 		action = "*"
 	}
 	return []UcanCapability{{Resource: resource, Action: action}}
+}
+
+func formatCaps(caps []UcanCapability) string {
+	if len(caps) == 0 {
+		return "-"
+	}
+	parts := make([]string, 0, len(caps))
+	for _, cap := range caps {
+		resource := strings.TrimSpace(cap.Resource)
+		action := strings.TrimSpace(cap.Action)
+		if resource == "" {
+			resource = "*"
+		}
+		if action == "" {
+			action = "*"
+		}
+		parts = append(parts, fmt.Sprintf("%s#%s", resource, action))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func (v *UcanVerifier) debug(msg string, fields ...zap.Field) {
