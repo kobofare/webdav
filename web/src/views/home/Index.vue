@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, computed, watch, defineAsyncComponent } from 'vue'
 import { storeToRefs } from 'pinia'
-import { ArrowLeft, ArrowUp, Delete, FolderAdd, FolderOpened, Refresh, Upload, DocumentCopy, Share, UserFilled, Search, MoreFilled } from '@element-plus/icons-vue'
+import { ArrowLeft, ArrowUp, Delete, Expand, Fold, FolderAdd, FolderOpened, Grid, Refresh, Upload, DocumentCopy, Share, UserFilled, Search, MoreFilled } from '@element-plus/icons-vue'
 import { ElMessageBox } from 'element-plus'
-import { quotaApi, userApi, recycleApi, shareApi, directShareApi, type RecycleItem, type ShareItem, type DirectShareItem } from '@/api'
+import { quotaApi, userApi, recycleApi, shareApi, directShareApi, assetsApi, type RecycleItem, type ShareItem, type DirectShareItem, type AssetSpaceInfo } from '@/api'
 import { isLoggedIn, hasWallet, getUsername, getWalletName, getCurrentAccount, getUserPermissions, getUserCreatedAt, loginWithWallet, loginWithPassword, sendEmailCode, loginWithEmailCode, getAccountHistory, watchWalletAccounts, consumeAccountChanged } from '@/plugins/auth'
 import { parsePropfindResponse } from '@/utils/webdav'
 import { copyText } from '@/utils/clipboard'
@@ -140,11 +140,31 @@ const VIEW_STORAGE_KEY = 'webdav:lastView'
 const FILE_PATH_STORAGE_KEY = 'webdav:lastFilePath'
 const SHARED_ACTIVE_STORAGE_KEY = 'webdav:sharedActiveId'
 const SHARED_PATH_STORAGE_KEY = 'webdav:sharedPath'
+const SIDEBAR_COLLAPSED_STORAGE_KEY = 'webdav:sidebarCollapsed'
 type ViewKey = 'files' | 'recycle' | 'shareLink' | 'shareDirect' | 'sharedWithMe' | 'quotaManage' | 'addressBook' | 'uploadTasks'
+type AssetSpace = AssetSpaceInfo
+const ASSET_SPACE_NAME_BY_KEY: Record<string, string> = {
+  personal: '个人资产',
+  apps: '应用资产'
+}
+const ASSET_SPACE_PATH_BY_KEY: Record<string, string> = {
+  personal: '/personal',
+  apps: '/apps'
+}
+const DEFAULT_ASSET_SPACES: AssetSpace[] = [
+  { key: 'personal', name: '个人资产', path: '/personal' },
+  { key: 'apps', name: '应用资产', path: '/apps' }
+]
+const assetSpaces = ref<AssetSpace[]>(DEFAULT_ASSET_SPACES)
+const defaultAssetSpaceKey = ref('personal')
+const assetSpaceLoading = ref(false)
+const appsRootDirectories = ref<Array<{ name: string; path: string }>>([])
+const sidePanelCollapsed = ref(false)
 
 // 是否显示回收站列表
+const isFileView = computed(() => !showRecycle.value && !showShare.value && !showQuotaManage.value && !showSharedWithMe.value && !showAddressBook.value && !showUploadTasks.value)
 const canUpload = computed(() => {
-  if (showRecycle.value || showShare.value || showQuotaManage.value || showAddressBook.value || showUploadTasks.value) return false
+  if (!isFileView.value && !showSharedWithMe.value) return false
   if (showSharedWithMe.value) return isSharedBrowse.value && sharedCanCreate.value
   return true
 })
@@ -298,6 +318,22 @@ const searchPlaceholder = computed(() => {
   if (showSharedWithMe.value) return sharedActive.value ? '搜索共享内容' : '搜索共享列表'
   return '搜索文件或目录'
 })
+const currentAssetSpace = computed(() => resolveAssetSpaceByPath(currentPath.value))
+const currentAssetSpaceKey = computed(() => currentAssetSpace.value?.key || '')
+const appsSpacePath = computed(() => getAppsSpacePath())
+const isInAppsSpace = computed(() => isPathInSpace(currentPath.value, appsSpacePath.value))
+const currentTopLevelApp = computed(() => getTopLevelAppFromPath(currentPath.value))
+const showAppQuickRow = computed(() => isFileView.value && isInAppsSpace.value && appsRootDirectories.value.length > 0)
+const fileBreadcrumbRoot = computed(() => {
+  const space = currentAssetSpace.value
+  if (space) {
+    return {
+      name: space.name,
+      path: normalizeDirectoryPath(space.path)
+    }
+  }
+  return { name: '根目录', path: '/' }
+})
 const mobileLocationLabel = computed(() => {
   if (showRecycle.value) return '回收站'
   if (showShare.value) return shareTab.value === 'link' ? '分享链接' : '定向分享'
@@ -305,8 +341,14 @@ const mobileLocationLabel = computed(() => {
   if (showQuotaManage.value) return '用户中心'
   if (showAddressBook.value) return '地址簿'
   if (showUploadTasks.value) return '上传任务'
+  const normalizedPath = normalizeDirectoryPath(currentPath.value)
+  if (currentAssetSpace.value && normalizedPath === normalizeDirectoryPath(currentAssetSpace.value.path)) {
+    return currentAssetSpace.value.name
+  }
   const parts = currentPath.value.split('/').filter(Boolean)
-  return parts.length ? parts[parts.length - 1] : '根目录'
+  if (parts.length) return parts[parts.length - 1]
+  const defaultSpace = getDefaultAssetSpace()
+  return defaultSpace?.name || '根目录'
 })
 const mobileLocationText = computed(() => `当前位置：${mobileLocationLabel.value}`)
 const detailTitle = computed(() => {
@@ -353,12 +395,18 @@ const quotaAvailable = computed(() => {
 })
 const breadcrumbItems = computed(() => {
   if (showRecycle.value) return []
-  const parts = currentPath.value.split('/').filter(Boolean)
+  const rootPath = normalizePathForSpaceMatch(fileBreadcrumbRoot.value.path)
+  const normalizedCurrent = normalizePathForSpaceMatch(currentPath.value)
+  let relative = normalizedCurrent
+  if (rootPath !== '/' && isPathInSpace(normalizedCurrent, rootPath)) {
+    relative = normalizedCurrent.slice(rootPath.length)
+  }
+  const parts = relative.split('/').filter(Boolean)
   const items: { name: string; path: string }[] = []
-  let acc = ''
+  let acc = rootPath === '/' ? '' : rootPath
   for (const part of parts) {
     acc += '/' + part
-    items.push({ name: part, path: acc + '/' })
+    items.push({ name: part, path: normalizeDirectoryPath(acc) })
   }
   return items
 })
@@ -510,6 +558,107 @@ function buildDavPath(path: string): string {
   return ensureDavPrefixedPath(path)
 }
 
+function normalizeDirectoryPath(path: string): string {
+  let normalized = stripUrlToPath(path || '/').trim()
+  if (!normalized.startsWith('/')) {
+    normalized = '/' + normalized
+  }
+  normalized = normalized.replace(/\/{2,}/g, '/')
+  if (normalized.length > 1) {
+    normalized = normalized.replace(/\/+$/, '')
+  }
+  if (!normalized) {
+    return '/'
+  }
+  return normalized === '/' ? '/' : `${normalized}/`
+}
+
+function normalizePathForSpaceMatch(path: string): string {
+  const normalized = normalizeDirectoryPath(path)
+  if (normalized === '/') return '/'
+  return normalized.replace(/\/$/, '')
+}
+
+function normalizeAssetSpaces(spaces: AssetSpace[]): AssetSpace[] {
+  const normalized: AssetSpace[] = []
+  const seen = new Set<string>()
+  for (const item of spaces) {
+    const key = String(item?.key || '').trim()
+    const canonicalName = ASSET_SPACE_NAME_BY_KEY[key] || ''
+    const canonicalPath = ASSET_SPACE_PATH_BY_KEY[key] || ''
+    const name = canonicalName || String(item?.name || '').trim()
+    const rawPath = String(item?.path || canonicalPath || '').trim()
+    const path = normalizeDirectoryPath(rawPath)
+    if (!key || !name || path === '/') continue
+    if (seen.has(key)) continue
+    seen.add(key)
+    normalized.push({ key, name, path })
+  }
+  return normalized
+}
+
+function getDefaultAssetSpace(): AssetSpace | null {
+  const normalized = normalizeAssetSpaces(assetSpaces.value)
+  if (!normalized.length) return null
+  const byKey = normalized.find(item => item.key === defaultAssetSpaceKey.value)
+  return byKey || normalized[0]
+}
+
+function resolveAssetSpaceByPath(path: string): AssetSpace | null {
+  const target = normalizePathForSpaceMatch(path)
+  for (const item of normalizeAssetSpaces(assetSpaces.value)) {
+    const root = normalizePathForSpaceMatch(item.path)
+    if (target === root || target.startsWith(`${root}/`)) {
+      return item
+    }
+  }
+  return null
+}
+
+function getAppsSpacePath(): string {
+  const appsSpace = normalizeAssetSpaces(assetSpaces.value).find(item => item.key === 'apps')
+  return normalizeDirectoryPath(appsSpace?.path || '/apps')
+}
+
+function isPathInSpace(path: string, spacePath: string): boolean {
+  const normalizedPath = normalizePathForSpaceMatch(path)
+  const normalizedSpace = normalizePathForSpaceMatch(spacePath)
+  if (normalizedSpace === '/') return true
+  return normalizedPath === normalizedSpace || normalizedPath.startsWith(`${normalizedSpace}/`)
+}
+
+function getTopLevelAppFromPath(path: string): string {
+  const appsRoot = normalizePathForSpaceMatch(getAppsSpacePath())
+  const normalizedPath = normalizePathForSpaceMatch(path)
+  if (!isPathInSpace(normalizedPath, appsRoot)) return ''
+  if (normalizedPath === appsRoot) return ''
+  const relative = normalizedPath.slice(appsRoot.length).replace(/^\/+/, '')
+  const [appName] = relative.split('/')
+  return appName || ''
+}
+
+function updateAppsRootDirectories(path: string, items: FileItem[]) {
+  const appsRootPath = getAppsSpacePath()
+  if (normalizePathForSpaceMatch(path) !== normalizePathForSpaceMatch(appsRootPath)) {
+    return
+  }
+  const dirs = items
+    .filter(item => item.isDir)
+    .map(item => ({
+      name: item.name,
+      path: normalizeDirectoryPath(item.path)
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name))
+  appsRootDirectories.value = dirs
+}
+
+function resolveInitialFilePath(storedPath: string): string {
+  const normalizedStored = normalizeDirectoryPath(storedPath || '/')
+  if (normalizedStored !== '/') return normalizedStored
+  const defaultSpace = getDefaultAssetSpace()
+  return defaultSpace ? defaultSpace.path : '/'
+}
+
 function ensureAuthCookie(token: string): void {
   if (!token) return
   document.cookie = `authToken=${token}; path=/; max-age=86400`
@@ -652,11 +801,37 @@ async function fetchFiles(path: string = '/') {
     currentPath.value = path
     localStorage.setItem(FILE_PATH_STORAGE_KEY, currentPath.value)
     fileList.value = parsePropfindResponse(text, currentPath.value, DAV_PREFIX)
+    updateAppsRootDirectories(currentPath.value, fileList.value)
+    if (isPathInSpace(currentPath.value, appsSpacePath.value) && appsRootDirectories.value.length === 0) {
+      void fetchAppsRootDirectories()
+    }
     console.log('parsed items:', fileList.value)
   } catch (error) {
     console.error('获取文件列表失败:', error)
   } finally {
     loading.value = false
+  }
+}
+
+async function fetchAppsRootDirectories() {
+  const rootPath = appsSpacePath.value
+  const apiPath = buildDavPath(rootPath)
+  try {
+    const token = localStorage.getItem('authToken') || ''
+    const response = await fetch(apiPath, {
+      method: 'PROPFIND',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/xml',
+        'Depth': '1'
+      }
+    })
+    if (!response.ok) return
+    const text = await response.text()
+    const parsed = parsePropfindResponse(text, rootPath, DAV_PREFIX)
+    updateAppsRootDirectories(rootPath, parsed)
+  } catch (error) {
+    console.error('获取应用目录失败:', error)
   }
 }
 
@@ -699,6 +874,28 @@ async function fetchUserInfo() {
   } catch (error) {
     console.error('获取用户信息失败:', error)
   }
+}
+
+async function fetchAssetSpaces() {
+  assetSpaceLoading.value = true
+  try {
+    const data = await assetsApi.getSpaces()
+    const spaces = normalizeAssetSpaces(data.spaces || [])
+    if (spaces.length) {
+      assetSpaces.value = spaces
+      const hasDefault = spaces.some(item => item.key === data.defaultSpace)
+      defaultAssetSpaceKey.value = hasDefault ? data.defaultSpace : spaces[0].key
+      return
+    }
+  } catch (error) {
+    console.error('获取资产空间失败:', error)
+  } finally {
+    assetSpaceLoading.value = false
+  }
+
+  const fallback = normalizeAssetSpaces(DEFAULT_ASSET_SPACES)
+  assetSpaces.value = fallback
+  defaultAssetSpaceKey.value = fallback[0]?.key || 'personal'
 }
 
 async function fetchUserCenter() {
@@ -1956,8 +2153,28 @@ function enterFiles(path: string = currentPath.value) {
   fetchFiles(path)
 }
 
+function enterAssetSpace(spaceKey: string) {
+  const target = normalizeAssetSpaces(assetSpaces.value).find(item => item.key === spaceKey)
+  if (!target) return
+  enterFiles(target.path)
+}
+
+function getAssetSpaceIcon(spaceKey: string) {
+  if (spaceKey === 'apps') return Grid
+  return FolderOpened
+}
+
+function toggleSidePanel() {
+  sidePanelCollapsed.value = !sidePanelCollapsed.value
+  try {
+    localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, sidePanelCollapsed.value ? '1' : '0')
+  } catch {
+    // ignore storage failure
+  }
+}
+
 function backToFiles() {
-  enterFiles(currentPath.value)
+  enterFiles(resolveInitialFilePath(currentPath.value))
 }
 
 // 恢复文件
@@ -2528,7 +2745,7 @@ async function restoreView() {
     return
   }
   const storedPath = localStorage.getItem(FILE_PATH_STORAGE_KEY) || '/'
-  enterFiles(storedPath)
+  enterFiles(resolveInitialFilePath(storedPath))
 }
 
 watch(renameDialogVisible, visible => {
@@ -2554,10 +2771,21 @@ watch(addressGroups, groups => {
 })
 
 onMounted(() => {
+  try {
+    sidePanelCollapsed.value = localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === '1'
+  } catch {
+    sidePanelCollapsed.value = false
+  }
+})
+
+onMounted(() => {
   if (isLoggedIn()) {
     fetchQuota()
     fetchUserInfo()
-    void restoreView()
+    void (async () => {
+      await fetchAssetSpaces()
+      await restoreView()
+    })()
   }
 })
 
@@ -2759,62 +2987,117 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- 已登录状态 -->
-    <div v-else class="app-shell">
+    <div v-else class="app-shell" :class="{ 'is-side-collapsed': sidePanelCollapsed }">
       <aside class="side-panel">
         <div class="brand">
-          <div class="brand-mark"></div>
-          <div class="brand-text">
-            <div class="brand-sub">资产管理中心</div>
+          <div class="brand-main">
+            <div class="brand-mark"></div>
+            <div class="brand-text" v-show="!sidePanelCollapsed">
+              <div class="brand-sub">资产管理中心</div>
+            </div>
           </div>
+          <el-tooltip :content="sidePanelCollapsed ? '展开侧栏' : '收起侧栏'" placement="right">
+            <el-button class="side-toggle-btn" circle size="small" @click="toggleSidePanel">
+              <el-icon>
+                <component :is="sidePanelCollapsed ? Expand : Fold" />
+              </el-icon>
+            </el-button>
+          </el-tooltip>
         </div>
 
         <div class="nav-block">
-          <div class="nav-list">
-            <button
-              type="button"
-              class="nav-item"
-              :class="{ active: !showRecycle && !showShare && !showQuotaManage && !showSharedWithMe && !showAddressBook && !showUploadTasks }"
-              @click="backToFiles"
-            >
-              <el-icon class="nav-icon"><FolderOpened /></el-icon>
-              <span>文件管理</span>
-            </button>
-            <button
-              type="button"
-              class="nav-item"
-              :class="{ active: showSharedWithMe }"
-              @click="enterSharedWithMe"
-            >
-              <el-icon class="nav-icon"><UserFilled /></el-icon>
-              <span>共享给我</span>
-            </button>
-            <button
-              type="button"
-              class="nav-item"
-              :class="{ active: showShare && shareTab === 'link' }"
-              @click="enterShare('link')"
-            >
-              <el-icon class="nav-icon"><DocumentCopy /></el-icon>
-              <span>分享链接</span>
-            </button>
-            <button
-              type="button"
-              class="nav-item"
-              :class="{ active: showShare && shareTab === 'direct' }"
-              @click="enterShare('direct')"
-            >
-              <el-icon class="nav-icon"><Share /></el-icon>
-              <span>定向分享</span>
-            </button>
-            <button
-              type="button"
-              class="nav-item"
-              :class="{ active: showRecycle }"
-              @click="enterRecycle"
-            >
-              <el-icon class="nav-icon"><Delete /></el-icon>
-              <span>回收站</span>
-            </button>
+          <div class="nav-group">
+            <div class="nav-group-title" v-show="!sidePanelCollapsed">资产类型</div>
+            <div class="asset-nav-list" v-if="assetSpaces.length">
+              <el-tooltip
+                v-for="space in assetSpaces"
+                :key="space.key"
+                :content="space.name"
+                placement="right"
+                :disabled="!sidePanelCollapsed"
+              >
+                <button
+                  type="button"
+                  class="asset-nav-item"
+                  :class="{ active: isFileView && currentAssetSpaceKey === space.key }"
+                  @click="enterAssetSpace(space.key)"
+                >
+                  <div class="asset-nav-main">
+                    <el-icon class="nav-icon">
+                      <component :is="getAssetSpaceIcon(space.key)" />
+                    </el-icon>
+                    <span v-show="!sidePanelCollapsed">{{ space.name }}</span>
+                  </div>
+                </button>
+              </el-tooltip>
+            </div>
+          </div>
+
+          <div class="nav-group">
+            <div class="nav-group-title" v-show="!sidePanelCollapsed">共享协作</div>
+            <div class="nav-list">
+              <el-tooltip content="共享给我" placement="right" :disabled="!sidePanelCollapsed">
+                <button
+                  type="button"
+                  class="nav-item"
+                  :class="{ active: showSharedWithMe }"
+                  @click="enterSharedWithMe"
+                >
+                  <el-icon class="nav-icon"><UserFilled /></el-icon>
+                  <span v-show="!sidePanelCollapsed">共享给我</span>
+                </button>
+              </el-tooltip>
+              <el-tooltip content="分享链接" placement="right" :disabled="!sidePanelCollapsed">
+                <button
+                  type="button"
+                  class="nav-item"
+                  :class="{ active: showShare && shareTab === 'link' }"
+                  @click="enterShare('link')"
+                >
+                  <el-icon class="nav-icon"><DocumentCopy /></el-icon>
+                  <span v-show="!sidePanelCollapsed">分享链接</span>
+                </button>
+              </el-tooltip>
+              <el-tooltip content="定向分享" placement="right" :disabled="!sidePanelCollapsed">
+                <button
+                  type="button"
+                  class="nav-item"
+                  :class="{ active: showShare && shareTab === 'direct' }"
+                  @click="enterShare('direct')"
+                >
+                  <el-icon class="nav-icon"><Share /></el-icon>
+                  <span v-show="!sidePanelCollapsed">定向分享</span>
+                </button>
+              </el-tooltip>
+            </div>
+          </div>
+
+          <div class="nav-group">
+            <div class="nav-group-title" v-show="!sidePanelCollapsed">系统</div>
+            <div class="nav-list">
+              <el-tooltip content="上传任务" placement="right" :disabled="!sidePanelCollapsed">
+                <button
+                  type="button"
+                  class="nav-item"
+                  :class="{ active: showUploadTasks }"
+                  @click="enterUploadTasks()"
+                >
+                  <el-icon class="nav-icon"><Upload /></el-icon>
+                  <span v-show="!sidePanelCollapsed">上传任务</span>
+                </button>
+              </el-tooltip>
+              <el-tooltip content="回收站" placement="right" :disabled="!sidePanelCollapsed">
+                <button
+                  type="button"
+                  class="nav-item"
+                  :class="{ active: showRecycle }"
+                  @click="enterRecycle"
+                >
+                  <el-icon class="nav-icon"><Delete /></el-icon>
+                  <span v-show="!sidePanelCollapsed">回收站</span>
+                </button>
+              </el-tooltip>
+            </div>
           </div>
         </div>
       </aside>
@@ -2907,7 +3190,9 @@ onBeforeUnmount(() => {
                   <div class="breadcrumb">
                     <el-breadcrumb separator="/">
                       <el-breadcrumb-item>
-                        <button class="breadcrumb-link" type="button" @click="fetchFiles('/')">根目录</button>
+                        <button class="breadcrumb-link" type="button" @click="fetchFiles(fileBreadcrumbRoot.path)">
+                          {{ fileBreadcrumbRoot.name }}
+                        </button>
                       </el-breadcrumb-item>
                       <el-breadcrumb-item v-for="crumb in breadcrumbItems" :key="crumb.path">
                         <button class="breadcrumb-link" type="button" @click="fetchFiles(crumb.path)">
@@ -2922,6 +3207,26 @@ onBeforeUnmount(() => {
                     </el-tooltip>
                   </div>
                 </template>
+              </div>
+              <div v-if="showAppQuickRow" class="app-quick-row">
+                <button
+                  type="button"
+                  class="app-quick-item"
+                  :class="{ active: !currentTopLevelApp }"
+                  @click="enterAssetSpace('apps')"
+                >
+                  全部
+                </button>
+                <button
+                  v-for="app in appsRootDirectories"
+                  :key="app.path"
+                  type="button"
+                  class="app-quick-item"
+                  :class="{ active: currentTopLevelApp === app.name }"
+                  @click="fetchFiles(app.path)"
+                >
+                  {{ app.name }}
+                </button>
               </div>
             </div>
             <div class="list-header-right">
@@ -3386,7 +3691,7 @@ onBeforeUnmount(() => {
         <button
           type="button"
           class="mobile-nav-item"
-          :class="{ active: !showRecycle && !showShare && !showQuotaManage && !showSharedWithMe && !showAddressBook && !showUploadTasks }"
+          :class="{ active: isFileView }"
           @click="backToFiles"
         >
           <el-icon><FolderOpened /></el-icon>
@@ -3732,6 +4037,10 @@ onBeforeUnmount(() => {
   min-height: 0;
 }
 
+.app-shell.is-side-collapsed {
+  grid-template-columns: 92px minmax(0, 1fr);
+}
+
 .side-panel {
   background: #fff;
   border-radius: 16px;
@@ -3748,9 +4057,17 @@ onBeforeUnmount(() => {
 .brand {
   display: flex;
   align-items: center;
-  gap: 12px;
+  justify-content: space-between;
+  gap: 8px;
   padding-bottom: 12px;
   border-bottom: 1px solid #f0f2f5;
+}
+
+.brand-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
 }
 
 .brand-mark {
@@ -3771,18 +4088,46 @@ onBeforeUnmount(() => {
   font-size: 14px;
   color: #98a2b3;
   margin-top: 2px;
+  white-space: nowrap;
+}
+
+.side-toggle-btn {
+  flex-shrink: 0;
+}
+
+.app-shell.is-side-collapsed .side-panel {
+  padding-left: 10px;
+  padding-right: 10px;
+}
+
+.app-shell.is-side-collapsed .brand {
+  justify-content: center;
+}
+
+.app-shell.is-side-collapsed .brand-main {
+  justify-content: center;
+}
+
+.app-shell.is-side-collapsed .nav-group {
+  align-items: center;
 }
 
 .nav-block {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 14px;
 }
 
-.nav-title {
+.nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.nav-group-title {
   font-size: 12px;
   color: #8a8f98;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
 }
 
@@ -3805,6 +4150,11 @@ onBeforeUnmount(() => {
   font-size: 14px;
   cursor: pointer;
   transition: all 0.2s ease;
+}
+
+.app-shell.is-side-collapsed .nav-item {
+  justify-content: center;
+  padding: 10px 8px;
 }
 
 .nav-item:hover {
@@ -3836,6 +4186,56 @@ onBeforeUnmount(() => {
   margin-left: auto;
 }
 
+.asset-nav-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.asset-nav-item {
+  width: 100%;
+  border: none;
+  background: #fff;
+  color: #606266;
+  border-radius: 12px;
+  padding: 10px 12px;
+  text-align: left;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.app-shell.is-side-collapsed .asset-nav-item {
+  padding: 10px 8px;
+  flex-direction: row;
+  justify-content: center;
+}
+
+.asset-nav-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.app-shell.is-side-collapsed .asset-nav-main {
+  justify-content: center;
+  width: 100%;
+}
+
+.asset-nav-item:hover {
+  background: #f7fbff;
+  color: #2b2f36;
+}
+
+.asset-nav-item.active {
+  background: #edf6ff;
+  color: #1c4fb8;
+  font-weight: 600;
+}
+
 .main-panel {
   display: flex;
   flex-direction: column;
@@ -3849,6 +4249,37 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 12px;
   flex-wrap: wrap;
+}
+
+.app-quick-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.app-quick-item {
+  border: 1px solid #e4e9f2;
+  background: #fff;
+  color: #606266;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.app-quick-item:hover {
+  border-color: #bfd9ff;
+  color: #409eff;
+}
+
+.app-quick-item.active {
+  border-color: #409eff;
+  background: #eef6ff;
+  color: #1c4fb8;
+  font-weight: 600;
 }
 
 .path-pill {
@@ -4141,6 +4572,10 @@ onBeforeUnmount(() => {
     grid-template-columns: 220px minmax(0, 1fr);
   }
 
+  .app-shell.is-side-collapsed {
+    grid-template-columns: 84px minmax(0, 1fr);
+  }
+
   .user-center {
     grid-template-columns: 1fr;
   }
@@ -4161,13 +4596,33 @@ onBeforeUnmount(() => {
     border-bottom: none;
   }
 
-  .nav-list {
-    flex-direction: row;
-    flex-wrap: wrap;
+  .nav-group {
+    gap: 6px;
   }
 
   .nav-item {
-    width: auto;
+    width: 100%;
+  }
+
+  .asset-nav-list {
+    width: 100%;
+    gap: 6px;
+  }
+
+  .asset-nav-item {
+    width: 100%;
+  }
+
+  .app-quick-row {
+    width: 100%;
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    -webkit-overflow-scrolling: touch;
+    padding-bottom: 2px;
+  }
+
+  .app-quick-item {
+    flex: 0 0 auto;
   }
 }
 
