@@ -3836,9 +3836,9 @@ onBeforeUnmount(() => {
   height: min(860px, 90vh);
   min-height: 620px;
   background: #ffffff;
-  border: 1px solid #dbe5f2;
+  border: 0;
   border-radius: 20px;
-  box-shadow: 0 20px 48px rgba(15, 23, 42, 0.14);
+  box-shadow: none;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -3911,13 +3911,13 @@ onBeforeUnmount(() => {
 .login-card {
   width: min(430px, 100%);
   background: #fff;
-  border: 1px solid #e3ebf7;
+  border: 0;
   border-radius: 14px;
   padding: 18px 18px;
   display: flex;
   flex-direction: column;
   gap: 14px;
-  box-shadow: 0 16px 34px rgba(15, 23, 42, 0.08);
+  box-shadow: none;
 }
 
 .login-section {
@@ -3927,11 +3927,11 @@ onBeforeUnmount(() => {
 }
 
 .login-main-btn {
-  width: min(220px, 100%);
+  width: 100%;
   height: 40px;
   border-radius: 10px;
   font-weight: 500;
-  align-self: center;
+  align-self: stretch;
 }
 
 .login-history {
