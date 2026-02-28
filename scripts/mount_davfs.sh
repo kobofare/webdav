@@ -19,7 +19,8 @@ Usage:
 Notes:
   - If password is omitted, it will be read from terminal securely.
   - Credentials are written to /etc/davfs2/secrets (chmod 600).
-  - Requires davfs2 and sudo permissions.
+  - Requires sudo permissions.
+  - On Linux, if davfs2 is missing, this script will try to install it automatically.
 EOF
 }
 
@@ -28,6 +29,44 @@ need_cmd() {
     echo "Missing required command: $1" >&2
     exit 1
   fi
+}
+
+ensure_davfs() {
+  if command -v mount.davfs >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if [[ "$(uname -s)" != "Linux" ]]; then
+    echo "mount.davfs not found and auto install is only supported on Linux." >&2
+    exit 1
+  fi
+
+  echo "mount.davfs not found. Trying to install davfs2 automatically..."
+
+  if command -v apt-get >/dev/null 2>&1; then
+    sudo apt-get update
+    sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y davfs2
+  elif command -v dnf >/dev/null 2>&1; then
+    sudo dnf install -y davfs2
+  elif command -v yum >/dev/null 2>&1; then
+    sudo yum install -y davfs2
+  elif command -v pacman >/dev/null 2>&1; then
+    sudo pacman -Sy --noconfirm davfs2
+  elif command -v zypper >/dev/null 2>&1; then
+    sudo zypper --non-interactive install davfs2
+  elif command -v apk >/dev/null 2>&1; then
+    sudo apk add --no-cache davfs2
+  else
+    echo "No supported package manager found. Please install davfs2 manually." >&2
+    exit 1
+  fi
+
+  if ! command -v mount.davfs >/dev/null 2>&1; then
+    echo "Auto install finished, but mount.davfs is still unavailable. Please install davfs2 manually." >&2
+    exit 1
+  fi
+
+  echo "davfs2 installed successfully."
 }
 
 upsert_secret() {
@@ -225,10 +264,7 @@ main() {
   need_cmd sudo
   need_cmd awk
 
-  if ! command -v mount.davfs >/dev/null 2>&1; then
-    echo "mount.davfs not found. Please install davfs2 first." >&2
-    exit 1
-  fi
+  ensure_davfs
 
   case "$action" in
     mount)

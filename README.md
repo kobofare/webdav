@@ -174,7 +174,7 @@ bash scripts/mount_davfs.sh umount /mnt/webdav
 ```
 
 说明：
-- 依赖 `davfs2`（`mount.davfs`）
+- 缺少 `davfs2`（`mount.davfs`）时，脚本会在 Linux 上尝试自动安装
 - 账号密码写入 `/etc/davfs2/secrets`（`600` 权限）
 - `install-fstab` 默认写入 `nofail,_netdev`，避免开机网络未就绪导致启动失败
 
