@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/yeying-community/warehouse/internal/application/assetspace"
 	"github.com/yeying-community/warehouse/internal/domain/auth"
@@ -83,6 +84,10 @@ func (s *WebDAVService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
+
+	// WebDAV 可能包含大文件上传/下载。清空当前请求的连接 deadline，
+	// 避免被全局 ReadTimeout/WriteTimeout（默认 30s）中途截断。
+	s.clearWebDAVDeadlines(w)
 
 	if isIgnoredWebDAVPath(r.URL.Path) {
 		if r.Body != nil {
@@ -207,6 +212,16 @@ func (s *WebDAVService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.logger.Debug("used space updated",
 			zap.String("username", u.Username),
 			zap.Int64("used_space", used))
+	}
+}
+
+func (s *WebDAVService) clearWebDAVDeadlines(w http.ResponseWriter) {
+	controller := http.NewResponseController(w)
+	if err := controller.SetReadDeadline(time.Time{}); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		s.logger.Debug("failed to clear webdav read deadline", zap.Error(err))
+	}
+	if err := controller.SetWriteDeadline(time.Time{}); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		s.logger.Debug("failed to clear webdav write deadline", zap.Error(err))
 	}
 }
 
