@@ -4028,43 +4028,46 @@ onBeforeUnmount(() => {
   --el-button-text-color: #ffffff;
   --el-button-hover-text-color: #ffffff;
   --el-button-active-text-color: #ffffff;
-  background-color: transparent !important;
-  background-image: linear-gradient(135deg, #4d88ff 0%, #2958eb 100%) !important;
-  box-shadow: 0 8px 18px rgba(33, 88, 233, 0.25);
-  transition: transform 0.16s ease, box-shadow 0.16s ease, filter 0.16s ease;
-}
-
-:deep(.el-button.login-wallet-btn) {
-  background-image: linear-gradient(135deg, #21c97b 0%, #0d8f54 100%) !important;
-  box-shadow: 0 8px 18px rgba(13, 143, 84, 0.28);
-}
-
-:deep(.el-button.login-password-btn),
-:deep(.el-button.login-password-submit-btn) {
-  background-image: linear-gradient(135deg, #4d88ff 0%, #2958eb 100%) !important;
-  box-shadow: 0 8px 18px rgba(33, 88, 233, 0.25);
-}
-
-:deep(.el-button.login-email-btn),
-:deep(.el-button.login-email-submit-btn),
-:deep(.el-button.login-code-btn) {
-  background-image: linear-gradient(135deg, #1bb8d7 0%, #0f7aa3 100%) !important;
-  box-shadow: 0 8px 18px rgba(15, 122, 163, 0.25);
+  background-color: #3f7fe0 !important;
+  background-image: none !important;
+  box-shadow: none;
+  transition: background-color 0.16s ease, transform 0.12s ease;
 }
 
 :deep(.el-button.login-main-btn:not(.is-disabled):hover),
 :deep(.el-button.login-submit:not(.is-disabled):hover),
 :deep(.el-button.email-code-button:not(.is-disabled):hover) {
-  filter: brightness(1.08);
-  transform: translateY(-1px);
+  background-color: #356fc7 !important;
 }
 
 :deep(.el-button.login-main-btn:not(.is-disabled):active),
 :deep(.el-button.login-submit:not(.is-disabled):active),
 :deep(.el-button.email-code-button:not(.is-disabled):active) {
-  filter: brightness(0.96);
+  background-color: #2e62b2 !important;
   transform: translateY(0);
-  box-shadow: 0 5px 12px rgba(31, 111, 242, 0.2);
+}
+
+:deep(.el-button.login-main-btn.login-password-btn),
+:deep(.el-button.login-main-btn.login-email-btn) {
+  border: 1px solid #b7cae7 !important;
+  color: #2f5fa8 !important;
+  --el-button-text-color: #2f5fa8;
+  --el-button-hover-text-color: #24508f;
+  --el-button-active-text-color: #1f467d;
+  --el-button-border-color: #b7cae7;
+  --el-button-hover-border-color: #9fb8de;
+  --el-button-active-border-color: #8caad7;
+  background-color: #f4f8ff !important;
+}
+
+:deep(.el-button.login-main-btn.login-password-btn:not(.is-disabled):hover),
+:deep(.el-button.login-main-btn.login-email-btn:not(.is-disabled):hover) {
+  background-color: #ecf3ff !important;
+}
+
+:deep(.el-button.login-main-btn.login-password-btn:not(.is-disabled):active),
+:deep(.el-button.login-main-btn.login-email-btn:not(.is-disabled):active) {
+  background-color: #e4eeff !important;
 }
 
 :deep(.el-button.login-main-btn.is-disabled),
@@ -4074,7 +4077,7 @@ onBeforeUnmount(() => {
   color: #f3f7ff !important;
   background-image: none !important;
   background-color: #b7c7df !important;
-  box-shadow: none;
+  box-shadow: none !important;
 }
 
 .login-form-shell {
